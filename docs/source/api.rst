@@ -58,6 +58,8 @@ Decorators for defining and implementing extra hooks (see :ref:`Extras`)
 
 .. autofunction:: fileformats.core.extra_implementation
 
+.. autofunction:: fileformats.core.find_extra_implementation
+
 
 Generic Classes
 ~~~~~~~~~~~~~~~

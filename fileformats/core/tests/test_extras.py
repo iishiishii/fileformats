@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 from docx import Document
 
-from fileformats.core import FileSet, MockMixin, extra, extra_implementation
+from fileformats.core import (
+    FileSet,
+    MockMixin,
+    extra,
+    extra_implementation,
+    find_extra_implementation,
+)
 from fileformats.testing import Foo, WithExtra
 from fileformats.vendor.openxmlformats_officedocument.application import (
     Wordprocessingml_Document,
@@ -265,3 +271,32 @@ def test_extra_wrapper_not_implemented(tmp_path: Path):
     fspath.write_text("woo")
     with pytest.raises(NotImplementedError, match="No implementation"):
         WooWrappedUnimplemented(fspath).test_extra_wrapped(3)
+
+
+def test_find_extra_implementation():
+    assert find_extra_implementation(WooWrapped.test_extra_wrapped, WooWrapped) is (
+        woo_test_extra_wrapped
+    )
+
+
+def test_find_extra_implementation_inherited():
+    class WooWrappedSub(WooWrapped):
+        pass
+
+    assert find_extra_implementation(WooWrapped.test_extra_wrapped, WooWrappedSub) is (
+        woo_test_extra_wrapped
+    )
+
+
+def test_find_extra_implementation_missing():
+    assert (
+        find_extra_implementation(
+            WooWrappedUnimplemented.test_extra_wrapped, WooWrappedUnimplemented
+        )
+        is None
+    )
+
+
+def test_find_extra_implementation_not_extra():
+    with pytest.raises(ValueError, match="not been defined as an extra"):
+        find_extra_implementation(FileSet.copy, FileSet)

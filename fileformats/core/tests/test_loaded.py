@@ -11,7 +11,9 @@ from fileformats.core import (
     Loaded,
     LoadedMarker,
     check_loaded,
+    extra,
     extra_implementation,
+    find_extra_implementation,
 )
 from fileformats.core.loaded import resolve_loaded_type
 
@@ -130,3 +132,32 @@ def test_load_scalar_json(tmp_path: Path) -> None:
     fspath = tmp_path / "scalar.json"
     fspath.write_text('"hello"')
     assert Json(fspath).load() == "hello"
+
+
+def test_loaded_from_optional_hint() -> None:
+    assert LoadedMarker.from_hint(Loaded[Json] | None) == LoadedMarker(Json)
+    assert LoadedMarker.from_hint(ty.Optional[Loaded[Json]]) == LoadedMarker(Json)
+    assert LoadedMarker.from_hint(Loaded[Json] | int) is None
+    assert LoadedMarker.from_hint(int | None) is None
+
+
+class Recipient(FileSet):
+    @extra
+    def apply(self, recipe: Loaded[FileSet] | None = None) -> None:
+        raise NotImplementedError
+
+
+class RecipientSub(Recipient):
+    pass
+
+
+def test_loaded_fileset_accepts_loaded_format() -> None:
+    @extra_implementation(Recipient.apply)
+    def apply(recipient: RecipientSub, recipe: Loaded[Json] | None = None) -> None:
+        pass
+
+    impl = find_extra_implementation(Recipient.apply, RecipientSub)
+    assert impl is apply
+    hint = ty.get_type_hints(impl, include_extras=True)["recipe"]
+    marker = LoadedMarker.from_hint(hint)
+    assert marker is not None and marker.format is Json

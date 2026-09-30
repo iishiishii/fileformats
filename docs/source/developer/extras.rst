@@ -117,8 +117,8 @@ the ``load`` implementation, and the data passed to ``save``, are of the format'
 ``loaded_type`` (see below).
 
 
-Loaded types
-------------
+Defining loaded types
+---------------------
 
 The type of the object returned by ``load`` (and accepted by ``save``) for a format is
 declared by its ``loaded_type`` class attribute, which defaults to ``Any``. Since the
@@ -163,6 +163,19 @@ e.g. JSON and YAML documents can be bare scalars as well as mappings and lists.
 
 Hooks of your own can use ``Loaded[Self]`` in the same way to refer to the loaded type
 of the format they are implemented for.
+
+Where different implementations of a hook take data loaded from different formats
+(e.g. a deidentification recipe that is specific to the format being deidentified),
+annotate the hook argument with ``Loaded[FileSet]`` (optionally ``| None``), which
+accepts ``Loaded[<format>]`` in the implementations. Callers can then find the format
+the implementation for a given type expects with ``find_extra_implementation``
+
+.. code-block:: python
+
+    impl = find_extra_implementation(MedicalImagingData.deidentify, type(image))
+    hint = typing.get_type_hints(impl, include_extras=True)["recipe"]
+    recipe_format = LoadedMarker.from_hint(hint).format
+    image.deidentify(out_dir, recipe=recipe_format(recipe_path).load())
 
 
 Registering converters

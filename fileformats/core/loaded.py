@@ -41,11 +41,17 @@ class LoadedMarker:
 
     @classmethod
     def from_hint(cls, tp: ty.Any) -> ty.Optional["LoadedMarker"]:
-        """Return the marker of a ``Loaded[X]`` hint, or None for any other hint.
+        """Return the marker of a ``Loaded[X]`` or ``Loaded[X] | None`` hint, or None
+        for any other hint.
 
         Hints must be obtained with ``get_type_hints(..., include_extras=True)`` or
         ``inspect.signature(..., eval_str=True)``, otherwise ``Annotated`` is stripped.
         """
+        if ty.get_origin(tp) in (ty.Union, types.UnionType):
+            args = [a for a in ty.get_args(tp) if a is not type(None)]
+            if len(args) != 1:
+                return None
+            tp = args[0]
         if ty.get_origin(tp) is Annotated:
             for meta in tp.__metadata__:
                 if isinstance(meta, cls):
@@ -107,14 +113,17 @@ else:
             raise TypeError("Loaded is only for annotations, use Format.load()")
 
         def __class_getitem__(cls, fmt: ty.Any) -> ty.Any:
-            from .fileset import FileSet
-
             # `Loaded[Self]` in FileSet.load/save is resolved against the format an
-            # extra implementation is registered for when its signature is checked
+            # extra implementation is registered for when its signature is checked.
+            # Handled before importing FileSet, as on Python < 3.14 the annotations
+            # in the FileSet class body are evaluated before FileSet is defined
             if fmt is ty.Self:
                 return Annotated[ty.Any, LoadedMarker(fmt)]
             if isinstance(fmt, ty.TypeVar):
                 return ty.Any
+
+            from .fileset import FileSet
+
             if not (inspect.isclass(fmt) and issubclass(fmt, FileSet)):
                 raise TypeError(f"Loaded[...] requires a FileSet subclass, not {fmt!r}")
             return Annotated[resolve_loaded_type(fmt.loaded_type), LoadedMarker(fmt)]

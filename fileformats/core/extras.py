@@ -111,6 +111,45 @@ def extra(
     return decorated_extra  # type: ignore[return-value]
 
 
+def find_extra_implementation(
+    method: ty.Callable[..., ty.Any], datatype: ty.Type[DataType]
+) -> ty.Optional[ty.Callable[..., ty.Any]]:
+    """Find the implementation of an extra method that would be called for the given
+    type, importing any extras modules that could contain it first
+
+    Parameters
+    ----------
+    method : Callable
+        the extra method, e.g. ``FileSet.load``
+    datatype : type[DataType]
+        the type to find the implementation for
+
+    Returns
+    -------
+    Callable or None
+        the registered implementation (which may be registered for a base class of
+        `datatype`), or None if there isn't one
+    """
+    try:
+        dispatch_method = method._dispatch  # type: ignore[attr-defined]
+    except AttributeError:
+        raise ValueError(f"{method} has not been defined as an extra method")
+    # Walk the MRO as well as referenced_types() so that the extras modules of the
+    # base classes are loaded for types defined outside of fileformats packages
+    to_import: ty.Set[ty.Type[DataType]] = set(
+        datatype.referenced_types()  # type: ignore[attr-defined]
+    )
+    to_import.update(
+        b for b in datatype.__mro__ if inspect.isclass(b) and issubclass(b, DataType)
+    )
+    for tp in to_import:
+        import_extras_module(tp)
+    implementation: ty.Callable[..., ty.Any] = dispatch_method.dispatch(datatype)
+    if implementation is dispatch_method.dispatch(object):
+        return None
+    return implementation
+
+
 def extra_implementation(
     method: ExtraMethod,
 ) -> ty.Callable[[ExtraImplementation], ExtraImplementation]:
