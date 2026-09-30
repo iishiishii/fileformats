@@ -323,3 +323,30 @@ def test_extra_implementation_unresolvable_annotation():
         )
         is woo_test_extra_unresolvable
     )
+
+
+class WooOptional(FileSet):
+    @extra
+    def test_extra_optional(self, a: ty.Optional[int] = None) -> None:
+        raise NotImplementedError
+
+
+class WooOptionalSub(WooOptional):
+    pass
+
+
+def test_extra_signature_none_ignored_arg():
+    """An optional argument can be annotated with `None` in an implementation to
+    signify that it is ignored"""
+
+    @extra_implementation(WooOptional.test_extra_optional)
+    def woo_test_extra_optional(woo: WooOptionalSub, a: None = None) -> None:
+        pass
+
+
+def test_extra_signature_none_non_optional_arg():
+    with pytest.raises(TypeError, match="Type of 'a' arg"):
+
+        @extra_implementation(Woo.test_extra)
+        def woo_test_extra(woo: Woo, a: None, b: float) -> float:
+            pass

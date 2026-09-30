@@ -174,8 +174,15 @@ the implementation for a given type expects with ``find_extra_implementation``
 
     impl = find_extra_implementation(MedicalImagingData.deidentify, type(image))
     hint = typing.get_type_hints(impl, include_extras=True)["recipe"]
-    recipe_format = LoadedMarker.from_hint(hint).format
-    image.deidentify(out_dir, recipe=recipe_format(recipe_path).load())
+    marker = LoadedMarker.from_hint(hint)
+    if marker is None:  # the implementation doesn't take a recipe
+        image.deidentify(out_dir)
+    else:
+        image.deidentify(out_dir, recipe=marker.format(recipe_path).load())
+
+Implementations that ignore an optional argument of the hook should annotate it with
+``None``, e.g. ``recipe: None = None``, which is accepted for any argument whose type in
+the hook includes ``None``.
 
 
 Registering converters

@@ -223,6 +223,11 @@ def extra_implementation(
             if mtype == ftype:  # type: ignore[comparison-overlap]
                 return True
 
+            # Annotating an optional argument with `None` in an implementation is the
+            # standard way to signify that the implementation ignores it
+            if ftype is None or ftype is type(None):
+                return type(None) in ty.get_args(mtype)
+
             morigin = ty.get_origin(mtype)
             forigin = ty.get_origin(ftype)
 
