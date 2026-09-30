@@ -25,8 +25,8 @@ from .exceptions import (
 )
 from .identification import (
     IANA_MIME_TYPE_REGISTRIES,
+    formats_by_mime_format_name,
     from_mime_format_name,
-    to_mime_format_name,
 )
 from .utils import add_exc_note, subpackages
 
@@ -140,7 +140,7 @@ class DataType(Classifier, metaclass=ABCMeta):
         mime_like: str = cls.namespace + "/"
         if cls.vendor:
             mime_like += "vnd." + cls.vendor + "."
-        mime_like += to_mime_format_name(cls.__name__)  # type: ignore[attr-defined]
+        mime_like += cls._mime_format_name(cls.namespace, cls.vendor)
         return mime_like
 
     @classmethod
@@ -170,7 +170,11 @@ class DataType(Classifier, metaclass=ABCMeta):
             if the MIME string does not correspond to a valid file format class
         """
         try:
-            namespace, format_name = mime_string.split("/")
+            # Split on the first "/" only, as foreign-namespace classifiers can contain
+            # "/" within brackets, e.g. "field/[testing/test-field]+array"
+            namespace, format_name = mime_string.split("/", 1)
+            if not namespace or not format_name or "[" in namespace:
+                raise ValueError
         except ValueError:
             raise FormatRecognitionError(
                 f"Format '{mime_string}' is not a valid MIME-like format of <namespace>/<format>"
@@ -220,96 +224,165 @@ class DataType(Classifier, metaclass=ABCMeta):
             else:
                 klass = next(iter(matching_name))
         else:
-            # Get the path to the module to load the class from
-            if format_name.startswith("vnd."):
-                name_parts = format_name.split(".")
-                vendor = name_parts[1]
-                format_name = ".".join(name_parts[2:])
-                module_path = f"fileformats.vendor.{vendor}.{namespace}"
-            else:
-                module_path = f"fileformats.{namespace}"
-            module_path = module_path.replace("-", "_")
-            try:
-                module = importlib.import_module(module_path)
-            except ImportError:
-                raise FormatRecognitionError(
-                    f"Did not find fileformats namespace package at '{module_path}' "
-                    f"required to interpret '{mime_string}' MIME, or MIME-like, type. "
-                    f"try installing the namespace package with "
-                    f"'python3 -m pip install fileformats-{namespace}'."
-                ) from None
-            class_name = from_mime_format_name(format_name)
-            try:
-                klass = getattr(module, class_name)
-            except AttributeError:
-                if "+" in format_name:
-                    parent_namespace: ty.Optional[str]
-                    if "_" in namespace:
-                        parent_namespace = namespace.split("_")[0]
-                        parent_module = importlib.import_module(
-                            "fileformats." + parent_namespace
-                        )
-                    else:
-                        parent_namespace = parent_module = None
-
-                    def get_format(mime_name: str) -> ty.Type[DataType]:
-                        name = from_mime_format_name(mime_name)
-                        try:
-                            return getattr(module, name)  # type: ignore
-                        except AttributeError:
-                            if parent_module:
-                                try:
-                                    return getattr(parent_module, name)  # type: ignore
-                                except AttributeError:
-                                    pass
-                                err_msg_part = f" or fileformats.{parent_namespace}"
-                            else:
-                                err_msg_part = ""
-                            raise FormatRecognitionError(
-                                f"Could not load format class {name} (from "
-                                f"'{mime_name}') fileformats.{namespace}"
-                                f"{err_msg_part} corresponding "
-                                f"to MIME, or MIME-like, type {mime_string}"
-                            ) from None
-
-                    classifiers_str, classified_name = format_name.split("+")
-                    classifiers = [get_format(c) for c in classifiers_str.split("..")]
-                    try:
-                        classified = get_format(classified_name)
-                    except FormatRecognitionError as e:
-                        try:
-                            classified = cls.generically_classifiable_by_name[
-                                classified_name
-                            ]
-                        except KeyError:
-                            add_exc_note(
-                                e,
-                                (
-                                    "neither list of generic types "
-                                    f"({list(cls.generically_classifiable_by_name)})"
-                                ),
-                            )
-                            raise e
-                    klass = classified[classifiers]  # type: ignore
-                else:
-                    raise FormatRecognitionError(
-                        f"Did not find '{class_name}' class in {module_path} "
-                        f"corresponding to MIME, or MIME-like, type {mime_string}"
-                    ) from None
+            klass = cls._resolve_mime_like(  # type: ignore[assignment]
+                namespace, format_name, mime_string
+            )
         if not (ty.get_origin(klass) is ty.Union or issubclass(klass, cls)):
             raise FormatRecognitionError(
                 f"Class '{klass}' does not inherit from '{cls}'"
             )
         return klass
 
+    @classmethod
+    def _resolve_mime_like(
+        cls, namespace: str, format_name: str, mime_string: str
+    ) -> ty.Type[Classifier]:
+        """Resolve the format part of a "MIME-like" string within the given namespace,
+        including classified types, e.g. "b..a+k", which can be nested by enclosing
+        classified classifiers in brackets, e.g. "[informal-schema+json]+zip", and
+        refer to classifiers in other namespaces by including their namespace within the
+        brackets, e.g. "[testing/test-field]+array"
+
+        Parameters
+        ----------
+        namespace : str
+            the namespace (with "-" replaced by "_") to resolve the format in
+        format_name : str
+            the format part of the MIME-like string (i.e. after the "/")
+        mime_string : str
+            the full MIME-like string being resolved, for error messages
+
+        Returns
+        -------
+        type
+            the resolved datatype or classifier
+        """
+        # Get the path to the module to load the class from
+        if format_name.startswith("vnd."):
+            name_parts = format_name.split(".")
+            vendor = name_parts[1]
+            format_name = ".".join(name_parts[2:])
+            module_path = f"fileformats.vendor.{vendor}.{namespace}"
+        else:
+            module_path = f"fileformats.{namespace}"
+        module_path = module_path.replace("-", "_")
+        try:
+            module = importlib.import_module(module_path)
+        except ImportError:
+            raise FormatRecognitionError(
+                f"Did not find fileformats namespace package at '{module_path}' "
+                f"required to interpret '{mime_string}' MIME, or MIME-like, type. "
+                f"try installing the namespace package with "
+                f"'python3 -m pip install fileformats-{namespace}'."
+            ) from None
+        if "[" not in format_name:
+            class_name = from_mime_format_name(format_name)
+            try:
+                return getattr(module, class_name)  # type: ignore[no-any-return]
+            except AttributeError:
+                if "+" not in format_name:
+                    raise FormatRecognitionError(
+                        f"Did not find '{class_name}' class in {module_path} "
+                        f"corresponding to MIME, or MIME-like, type {mime_string}"
+                    ) from None
+
+        parent_namespace: ty.Optional[str]
+        if "_" in namespace:
+            parent_namespace = namespace.split("_")[0]
+            parent_module = importlib.import_module("fileformats." + parent_namespace)
+        else:
+            parent_namespace = parent_module = None
+
+        def get_format(mime_name: str) -> ty.Type[Classifier]:
+            name = from_mime_format_name(mime_name)
+            try:
+                return getattr(module, name)  # type: ignore
+            except AttributeError:
+                if parent_module:
+                    try:
+                        return getattr(parent_module, name)  # type: ignore
+                    except AttributeError:
+                        pass
+                    err_msg_part = f" or fileformats.{parent_namespace}"
+                else:
+                    err_msg_part = ""
+                raise FormatRecognitionError(
+                    f"Could not load format class {name} (from "
+                    f"'{mime_name}') fileformats.{namespace}"
+                    f"{err_msg_part} corresponding "
+                    f"to MIME, or MIME-like, type {mime_string}"
+                ) from None
+
+        def parse_item(item: str) -> ty.Type[Classifier]:
+            if _is_single_bracketed(item):
+                inner = item[1:-1]
+                parts = _split_top_level(inner, "/", mime_string)
+                if len(parts) == 2:
+                    # Classifier from another namespace, e.g. "[testing/test-field]"
+                    return cls._resolve_mime_like(
+                        parts[0].replace("-", "_"), parts[1], mime_string
+                    )
+                if len(parts) > 2:
+                    raise FormatRecognitionError(
+                        f"Invalid classifier '{item}' in MIME-like type {mime_string}"
+                    )
+                return parse(inner)
+            if "[" in item or "]" in item:
+                raise FormatRecognitionError(
+                    f"Invalid classifier '{item}' in MIME-like type {mime_string}, "
+                    "brackets must enclose the whole classifier"
+                )
+            return get_format(item)
+
+        def parse(name: str) -> ty.Type[Classifier]:
+            parts = _split_top_level(name, "+", mime_string)
+            if len(parts) == 1:
+                return parse_item(name)
+            if len(parts) > 2:
+                raise FormatRecognitionError(
+                    f"Could not parse '{name}' in MIME-like type {mime_string}, "
+                    "classified types used as classifiers need to be enclosed in "
+                    "brackets, e.g. '[informal-schema+json]+zip'"
+                )
+            classifiers_str, classified_name = parts
+            classifiers = [
+                parse_item(c)
+                for c in _split_top_level(classifiers_str, "..", mime_string)
+            ]
+            classified: ty.Type[Classifier]
+            if _is_single_bracketed(classified_name):
+                classified = parse_item(classified_name)
+            else:
+                try:
+                    classified = get_format(classified_name)
+                except FormatRecognitionError as e:
+                    try:
+                        classified = cls.generically_classifiable_by_name[
+                            classified_name
+                        ]
+                    except KeyError:
+                        add_exc_note(
+                            e,
+                            (
+                                "neither list of generic types "
+                                f"({list(cls.generically_classifiable_by_name)})"
+                            ),
+                        )
+                        raise e
+            return classified[classifiers]  # type: ignore
+
+        return parse(format_name)
+
     @classproperty  # type: ignore[arg-type]
     def generically_classifiable_by_name(cls) -> ty.Dict[str, ty.Type[DataType]]:
         if cls._generically_classifiable_by_name is None:
-            cls._generically_classifiable_by_name = {
-                to_mime_format_name(f.__name__): f
-                for f in FileSet.all_formats
-                if getattr(f, "generically_classifiable", False)
-            }
+            cls._generically_classifiable_by_name = dict(
+                formats_by_mime_format_name(
+                    f
+                    for f in FileSet.all_formats
+                    if getattr(f, "generically_classifiable", False)
+                )
+            )
         return cls._generically_classifiable_by_name
 
     # Register all generically classified types
@@ -319,6 +392,50 @@ class DataType(Classifier, metaclass=ABCMeta):
 
     REQUIRED_ANNOTATION = "__fileformats_required__"
     CHECK_ANNOTATION = "__fileformats_check__"
+
+
+def _split_top_level(string: str, sep: str, mime_string: str) -> ty.List[str]:
+    """Split `string` on `sep`, ignoring occurrences of `sep` within brackets"""
+    parts = []
+    depth = 0
+    start = 0
+    i = 0
+    while i < len(string):
+        char = string[i]
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth < 0:
+                break
+        elif depth == 0 and string.startswith(sep, i):
+            parts.append(string[start:i])
+            i += len(sep)
+            start = i
+            continue
+        i += 1
+    if depth != 0:
+        raise FormatRecognitionError(
+            f"Unbalanced brackets in MIME-like type {mime_string}"
+        )
+    parts.append(string[start:])
+    return parts
+
+
+def _is_single_bracketed(item: str) -> bool:
+    """Whether `item` is enclosed in a single pair of matching brackets, e.g. "[a+b]"
+    but not "[a]..[b]" """
+    if not (item.startswith("[") and item.endswith("]")):
+        return False
+    depth = 0
+    for i, char in enumerate(item):
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0 and i != len(item) - 1:
+                return False
+    return depth == 0
 
 
 import fileformats.core.converter_helpers  # noqa

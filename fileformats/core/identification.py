@@ -1,5 +1,6 @@
 import functools
 import inspect
+import logging
 import operator
 import re
 import typing as ty
@@ -15,6 +16,8 @@ from .utils import (
     is_optional,
     is_union,
 )
+
+logger = logging.getLogger("fileformats")
 
 LIST_MIME = "+list-of"
 TUPLE_MIME = "+tuple-of"
@@ -288,21 +291,43 @@ def from_paths(
 
 
 def to_mime_format_name(format_name: str) -> str:
-    if "____" in format_name:
+    if format_name.startswith("_"):
+        # Leading underscores are used for names that start with a digit
+        format_name = format_name[1:]
+    if "___" in format_name:
         raise FormatDefinitionError(
             f"Cannot convert name of format class {format_name} to mime string as it "
-            "contains quadruple underscore, which is undefined behavior (triple underscore "
-            "is used to indicate '+' in mime string, double underscores are used as "
-            "delimiters between classifiers, and single underscores are used to indicate '.')"
+            "contains triple underscore, which is undefined behavior (double underscores "
+            "are used to indicate '+' in mime string and single underscores are used "
+            "to indicate '.')"
         )
-    if format_name.startswith("_"):
-        format_name = format_name[1:]
     format_name = format_name[0].lower() + format_name[1:]
-    format_name = re.sub("___([A-Z])", lambda m: "+" + m.group(1).lower(), format_name)
+    format_name = re.sub("__([A-Z])", lambda m: "+" + m.group(1).lower(), format_name)
+    format_name = re.sub("__$", "+", format_name)
     format_name = re.sub("_([A-Z])", lambda m: "." + m.group(1).lower(), format_name)
-    format_name = format_name.replace("_.", "..")
     format_name = re.sub("([A-Z])", lambda m: "-" + m.group(1).lower(), format_name)
     return format_name
+
+
+FormatT = ty.TypeVar("FormatT", bound=type)
+
+
+def formats_by_mime_format_name(
+    formats: ty.Iterable[FormatT],
+) -> ty.Iterator[ty.Tuple[str, FormatT]]:
+    """Pair each format with the MIME format name of its class, skipping (with a
+    warning) any whose name can't be converted, e.g. from an installed extension
+    package that is out of date, so that they don't prevent the others being found"""
+    for fmt in formats:
+        try:
+            yield to_mime_format_name(fmt.__name__), fmt
+        except FormatDefinitionError as e:
+            logger.warning(
+                "Skipping %s.%s when looking up formats by name: %s",
+                fmt.__module__,
+                fmt.__name__,
+                e,
+            )
 
 
 def from_mime_format_name(format_name: str) -> str:
@@ -312,8 +337,8 @@ def from_mime_format_name(format_name: str) -> str:
         format_name = "_" + format_name
     format_name = format_name.capitalize()
     format_name = re.sub(r"\.(\w)", lambda m: "_" + m.group(1).upper(), format_name)
-    format_name = re.sub(r"\+(\w)", lambda m: "___" + m.group(1).upper(), format_name)
-    format_name = re.sub(r"\+$", "___", format_name)
+    format_name = re.sub(r"\+(\w)", lambda m: "__" + m.group(1).upper(), format_name)
+    format_name = re.sub(r"\+$", "__", format_name)
     format_name = re.sub(r"-(\d)", lambda m: "_" + m.group(1), format_name)
     format_name = re.sub(r"-(\w)", lambda m: m.group(1).upper(), format_name)
     return format_name

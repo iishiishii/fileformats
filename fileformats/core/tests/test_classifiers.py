@@ -5,7 +5,8 @@ import decimal
 import pytest
 from pydra.compose import python
 
-from fileformats.application import Zip
+from fileformats.application import Json, Zip
+from fileformats.application.serialization import InformalSchema
 from fileformats.core import DataType, FileSet, converter, from_mime
 from fileformats.core.exceptions import (
     FormatConversionError,
@@ -242,10 +243,55 @@ def test_mime_roundtrips():
     assert from_mime("testing/b..a+k") is K[B, A]
     assert from_mime("testing/b..a+k") is not K[A, B]
 
-    with pytest.raises(
-        FormatRecognitionError, match="Cannot create reversible MIME type"
-    ):
-        Array[TestField].mime_like
+    # Classifiers from other namespaces include their namespace
+    assert Array[TestField].mime_like == "field/[testing/test-field]+array"
+    assert from_mime("field/[testing/test-field]+array") is Array[TestField]
+
+
+def test_nested_mime_roundtrips():
+    # Classified classifiers are enclosed in brackets
+    assert Zip[K[B, A]].mime_like == "testing/[b..a+k]+zip"
+    assert from_mime("testing/[b..a+k]+zip") is Zip[K[B, A]]
+
+    assert K[K[B, A], A].mime_like == "testing/[b..a+k]..a+k"
+    assert from_mime("testing/[b..a+k]..a+k") is K[K[B, A], A]
+
+    assert Zip[Zip[K[B, A]]].mime_like == "testing/[[b..a+k]+zip]+zip"
+    assert from_mime("testing/[[b..a+k]+zip]+zip") is Zip[Zip[K[B, A]]]
+
+    # Classified classifiers from other namespaces include their namespace
+    assert (
+        K[Json[InformalSchema], A].mime_like
+        == "testing/[application/informal-schema+json]..a+k"
+    )
+    assert from_mime("testing/[application/informal-schema+json]..a+k") is (
+        K[Json[InformalSchema], A]
+    )
+    assert (
+        Zip[K[Json[InformalSchema], A]].mime_like
+        == "testing/[[application/informal-schema+json]..a+k]+zip"
+    )
+    assert from_mime("testing/[[application/informal-schema+json]..a+k]+zip") is (
+        Zip[K[Json[InformalSchema], A]]
+    )
+
+    # Class names are how the types are written
+    assert Zip[K[B, A]].__name__ == "Zip[K[B, A]]"
+
+
+@pytest.mark.parametrize(
+    "mime_str",
+    [
+        "testing/b..a+k+zip",  # nested classifier not in brackets
+        "testing/[b..a+k+zip",  # unbalanced
+        "testing/b..a+k]+zip",  # unbalanced
+        "testing/[b]x..a+k",  # brackets not enclosing whole classifier
+        "[testing/b..a+k]",  # no namespace
+    ],
+)
+def test_nested_mime_fail(mime_str):
+    with pytest.raises(FormatRecognitionError):
+        from_mime(mime_str)
 
 
 def test_mime_fail():

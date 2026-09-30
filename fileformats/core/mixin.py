@@ -13,7 +13,6 @@ from .exceptions import (
     FileFormatsExtrasError,
     FormatDefinitionError,
     FormatMismatchError,
-    FormatRecognitionError,
 )
 from .identification import to_mime_format_name
 from .utils import get_optional_type
@@ -466,8 +465,10 @@ class WithClassifiers:
             ]
             if not cls.ordered_classifiers:
                 classifier_names.sort()
+            # The name isn't used to generate the MIME-like string (see
+            # `_mime_format_name`), so it can be the same as how it is written
             classified = type(
-                f"{'__'.join(classifier_names)}___{cls.__name__}",
+                f"{cls.__name__}[{', '.join(classifier_names)}]",
                 (cls,),
                 class_attrs,
             )
@@ -717,13 +718,10 @@ class WithClassifiers:
                     and namespaces[1].split("-")[0] == namespaces[0]
                 ):
                     return namespaces[1]
-                msg = (
-                    "Cannot create reversible MIME type for because did not find a "
-                    f"common namespace between all classifiers {list(cls.classifiers)}"
-                )
-                if not cls.generically_classifiable:
-                    msg += f" and (non genericly classified) base class {cls.unclassified}"  # type: ignore[attr-defined]
-                raise FormatRecognitionError(msg + f", found:\n{list(namespaces)}")
+                # Otherwise use the namespace of the unclassified type, and include
+                # the namespaces of the classifiers from other namespaces in the
+                # MIME-like string (see `_mime_format_name`)
+                return cls.unclassified.namespace  # type: ignore[attr-defined, no-any-return]
         else:
             try:
                 namespace = super().namespace  # type: ignore[misc]
@@ -746,14 +744,61 @@ class WithClassifiers:
                 return None
             if len(vendors) == 1:
                 return next(iter(vendors))
-            msg = (
-                "Cannot create reversible MIME type for because did not find a "
-                f"common vendor between all classifiers {list(cls.classifiers)}"
-            )
-            raise FormatRecognitionError(msg + f", found:\n{list(vendors)}")
+            # Otherwise use the vendor of the unclassified type, and include the
+            # vendors of the other classifiers in the MIME-like string (see
+            # `_mime_format_name`)
+            return cls.unclassified.vendor  # type: ignore[attr-defined, no-any-return]
         else:
             vendor = super().vendor  # type: ignore[misc]
         return vendor
+
+    @classmethod
+    def _mime_format_name(
+        cls, namespace: ty.Optional[str] = None, vendor: ty.Optional[str] = None
+    ) -> str:
+        """The format part of the MIME-like string of the class (i.e. after the "/"),
+        generated from its classifiers and unclassified type rather than its name, e.g.
+        "b..a+k". Classified types used as classifiers are enclosed in brackets, e.g.
+        "[informal-schema+json]+zip", and classifiers that can't be found in the
+        namespace (and vendor) of the MIME-like string include their own, e.g.
+        "[testing/test-field]+array"
+
+        Parameters
+        ----------
+        namespace : str, optional
+            the namespace of the MIME-like string the name is part of, the namespace of
+            the class by default
+        vendor : str, optional
+            the vendor of the MIME-like string the name is part of, the vendor of the
+            class by default
+        """
+        if not cls.is_classified:
+            return super()._mime_format_name(namespace, vendor)  # type: ignore[misc, no-any-return]
+        if namespace is None:
+            namespace = cls.namespace
+            vendor = cls.vendor
+        assert namespace is not None
+
+        def item_name(tp: ty.Type[Classifier]) -> str:
+            if not tp._resolvable_in(namespace, vendor):
+                return "[" + tp.mime_like + "]"  # type: ignore[attr-defined, no-any-return]
+            name = tp._mime_format_name(namespace, vendor)
+            if getattr(tp, "is_classified", False):
+                name = "[" + name + "]"
+            return name
+
+        classifiers = "..".join(
+            item_name(get_optional_type(t)) for t in cls.classifiers
+        )
+        unclassified = cls.unclassified  # type: ignore[attr-defined]
+        if unclassified._resolvable_in(namespace, vendor) or getattr(
+            unclassified, "generically_classifiable", False
+        ):
+            # Generically classifiable types are looked up by name across all namespaces
+            unclassified_name = unclassified._mime_format_name(namespace, vendor)
+        else:
+            unclassified_name = "[" + unclassified.mime_like + "]"
+        return classifiers + "+" + str(unclassified_name)
 
     @classproperty  # type: ignore[arg-type]
     def type_name(cls) -> str:
