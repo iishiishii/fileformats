@@ -75,6 +75,10 @@ def extra(
         extras = []
         for tp in cls.referenced_types():  # type: ignore[attr-defined]
             extras.append(import_extras_module(tp))
+        if dispatch_method.dispatch(cls) is dispatch_method.dispatch(object):  # type: ignore[attr-defined]
+            # Nothing registered for the type yet, so try the extras modules of its base
+            # classes, e.g. for a format subclassing one from another namespace
+            _import_base_extras_modules(cls)
         try:
             if wrapper is None:
                 return dispatch_method(obj, *args, **kwargs)
@@ -111,6 +115,15 @@ def extra(
     return decorated_extra  # type: ignore[return-value]
 
 
+def _import_base_extras_modules(datatype: ty.Type[DataType]) -> None:
+    """Import the extras modules of the base classes of `datatype`, which may contain
+    implementations it inherits (e.g. if it subclasses a format from another namespace
+    or is defined outside of fileformats packages)"""
+    for base in datatype.__mro__[1:]:
+        if inspect.isclass(base) and issubclass(base, DataType):
+            import_extras_module(base)
+
+
 def find_extra_implementation(
     method: ty.Callable[..., ty.Any], datatype: ty.Type[DataType]
 ) -> ty.Optional[ty.Callable[..., ty.Any]]:
@@ -134,16 +147,9 @@ def find_extra_implementation(
         dispatch_method = method._dispatch  # type: ignore[attr-defined]
     except AttributeError:
         raise ValueError(f"{method} has not been defined as an extra method")
-    # Walk the MRO as well as referenced_types() so that the extras modules of the
-    # base classes are loaded for types defined outside of fileformats packages
-    to_import: ty.Set[ty.Type[DataType]] = set(
-        datatype.referenced_types()  # type: ignore[attr-defined]
-    )
-    to_import.update(
-        b for b in datatype.__mro__ if inspect.isclass(b) and issubclass(b, DataType)
-    )
-    for tp in to_import:
+    for tp in datatype.referenced_types():  # type: ignore[attr-defined]
         import_extras_module(tp)
+    _import_base_extras_modules(datatype)
     implementation: ty.Callable[..., ty.Any] = dispatch_method.dispatch(datatype)
     if implementation is dispatch_method.dispatch(object):
         return None

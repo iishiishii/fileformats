@@ -1,4 +1,6 @@
 import platform
+import subprocess
+import sys
 import typing as ty
 from pathlib import Path
 
@@ -350,3 +352,22 @@ def test_extra_signature_none_non_optional_arg():
         @extra_implementation(Woo.test_extra)
         def woo_test_extra(woo: Woo, a: None, b: float) -> float:
             pass
+
+
+def test_extra_inherited_from_other_namespace(tmp_path: Path):
+    """Implementations registered in the extras module of a base class in another
+    namespace are found, even if that module hasn't been imported yet (run in a separate
+    process so it definitely hasn't been)"""
+    fspath = tmp_path / "a.json"
+    fspath.write_text('{"a": 1}')
+    script = f"""
+import sys
+from fileformats.application import Json
+
+class OtherNamespaceJson(Json):
+    __module__ = "test_other_namespace"
+
+assert "fileformats.extras.application" not in sys.modules
+assert OtherNamespaceJson({str(fspath)!r}).load() == {{"a": 1}}
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
