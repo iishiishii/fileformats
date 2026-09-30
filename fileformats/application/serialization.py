@@ -5,7 +5,10 @@ from fileformats.core.mixin import WithClassifier
 from fileformats.core.typing import TypeAlias
 from fileformats.generic import UnicodeFile
 
-SerializationType: TypeAlias = ty.Union[dict[str, ty.Any], list[ty.Any]]
+# JSON/YAML documents can be a bare scalar as well as a mapping or sequence
+SerializationType: TypeAlias = ty.Union[
+    dict[str, ty.Any], list[ty.Any], str, int, float, bool, None
+]
 
 
 class Schema(DataType):
@@ -45,6 +48,7 @@ class Xml(TextSerialization):
 class Json(TextSerialization):
     ext: ty.Optional[str] = ".json"
     allowed_classifiers = (JsonSchema, InformalSchema)
+    loaded_type = SerializationType
 
     # TODO: add validation mechanisms to check class
 
@@ -52,6 +56,7 @@ class Json(TextSerialization):
 class Yaml(TextSerialization):
     ext = ".yaml"
     alternate_exts = (".yml",)
+    loaded_type = SerializationType
 
 
 class Toml(TextSerialization):

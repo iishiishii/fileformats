@@ -224,3 +224,44 @@ def test_extra_override():
     outside of the extras module."""
     wextra = WithExtra.sample()
     assert wextra.foo(2) == 6
+
+
+def _double_result(
+    impl: ty.Callable[..., float], woo: "WooWrapped", a: int, **kwargs: ty.Any
+) -> float:
+    if a < 0:
+        raise ValueError("a must be non-negative")
+    return 2 * impl(woo, a, **kwargs)
+
+
+class WooWrapped(FileSet):
+    @extra(wrapper=_double_result)
+    def test_extra_wrapped(self, a: int) -> float:
+        raise NotImplementedError
+
+
+class WooWrappedUnimplemented(FileSet):
+    @extra(wrapper=_double_result)
+    def test_extra_wrapped(self, a: int) -> float:
+        raise NotImplementedError
+
+
+@extra_implementation(WooWrapped.test_extra_wrapped)
+def woo_test_extra_wrapped(woo: WooWrapped, a: int) -> float:
+    return float(a)
+
+
+def test_extra_wrapper(tmp_path: Path):
+    fspath = tmp_path / "woo.txt"
+    fspath.write_text("woo")
+    assert WooWrapped(fspath).test_extra_wrapped(3) == 6.0
+    with pytest.raises(ValueError, match="non-negative"):
+        WooWrapped(fspath).test_extra_wrapped(-1)
+
+
+def test_extra_wrapper_not_implemented(tmp_path: Path):
+    """The base method's NotImplementedError propagates through the wrapper"""
+    fspath = tmp_path / "woo.txt"
+    fspath.write_text("woo")
+    with pytest.raises(NotImplementedError, match="No implementation"):
+        WooWrappedUnimplemented(fspath).test_extra_wrapped(3)

@@ -15,6 +15,7 @@ class Dicom(WithMagicNumber, BinaryFile):
     binary = True
 
     alternate_exts = (".dcm",)  # dcm is recommended not required
+    loaded_type = "pydicom.FileDataset"
 
     @classmethod
     def pydicom_to_dict(

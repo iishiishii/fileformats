@@ -2,10 +2,10 @@ import functools
 import importlib
 import inspect
 import logging
-import sys
 import typing as ty
 import urllib.error
 from itertools import zip_longest
+from typing import Annotated, Self
 
 import fileformats.core
 from fileformats.core.typing import TypeAlias
@@ -17,12 +17,8 @@ from .exceptions import (
     FileFormatsExtrasNotImplementedError,
     FormatConversionError,
 )
+from .loaded import LoadedMarker, resolve_loaded_type
 from .utils import add_exc_note, check_package_exists_on_pypi, import_extras_module
-
-if sys.version_info < (3, 11):
-    from typing_extensions import Self
-else:
-    from typing import Self
 
 logger = logging.getLogger("fileformats")
 
@@ -32,11 +28,44 @@ if ty.TYPE_CHECKING:
 T = ty.TypeVar("T")
 ExtraImplementation = ty.TypeVar("ExtraImplementation", bound=ty.Callable[..., ty.Any])
 ExtraMethod = ty.TypeVar("ExtraMethod", bound=ty.Callable[..., ty.Any])
+# Called as `wrapper(implementation, obj, *args, **kwargs)`
+ExtraWrapper: TypeAlias = ty.Callable[..., ty.Any]
 
 
-def extra(method: ExtraMethod) -> "ExtraMethod":
+@ty.overload
+def extra(method: ExtraMethod) -> ExtraMethod: ...
+
+
+@ty.overload
+def extra(*, wrapper: ExtraWrapper) -> ty.Callable[[ExtraMethod], ExtraMethod]: ...
+
+
+def extra(
+    method: ty.Optional[ExtraMethod] = None,
+    *,
+    wrapper: ty.Optional[ExtraWrapper] = None,
+) -> ty.Union[ExtraMethod, ty.Callable[[ExtraMethod], ExtraMethod]]:
     """A decorator which uses singledispatch to facilitate the registering of
-    "extra" functionality in external packages (e.g. "fileformats-extras")"""
+    "extra" functionality in external packages (e.g. "fileformats-extras")
+
+    Parameters
+    ----------
+    method : Callable
+        the method to define as an extra hook. Its signature is what implementations
+        are checked against and its body is only called if there is no implementation
+        registered for the type (so it should just raise NotImplementedError)
+    wrapper : Callable, optional
+        a function wrapped around every call to the registered implementations, e.g.
+        to validate arguments or return values. It is called as
+        ``wrapper(implementation, obj, *args, **kwargs)`` and is responsible for
+        calling ``implementation(obj, *args, **kwargs)`` and returning its result
+    """
+    if method is None:
+
+        def extra_decorator(method: ExtraMethod) -> ExtraMethod:
+            return extra(method, wrapper=wrapper)  # type: ignore[call-overload, no-any-return]
+
+        return extra_decorator
 
     dispatch_method: ty.Callable[..., ty.Any] = functools.singledispatch(method)
 
@@ -47,7 +76,9 @@ def extra(method: ExtraMethod) -> "ExtraMethod":
         for tp in cls.referenced_types():  # type: ignore[attr-defined]
             extras.append(import_extras_module(tp))
         try:
-            return dispatch_method(obj, *args, **kwargs)
+            if wrapper is None:
+                return dispatch_method(obj, *args, **kwargs)
+            return wrapper(dispatch_method, obj, *args, **kwargs)
         except NotImplementedError:
             msg = f"No implementation for {method.__name__!r} extra for {cls.__name__} types"
             for xtra in extras:
@@ -103,6 +134,16 @@ def extra_implementation(
         dispatched_type = list(fsig.parameters.values())[0].annotation
         differences = []
 
+        def resolve_loaded_self(tp: ty.Any) -> ty.Any:
+            """Substitute `Loaded[Self]` in the method signature with the `loaded_type`
+            of the type the implementation is registered for. Dotted-path strings
+            (e.g. "pydicom.FileDataset") are left as is so they can be matched against
+            identical string annotations without importing the optional dependency"""
+            marker = LoadedMarker.from_hint(tp)
+            if marker is not None and marker.format is Self:  # type: ignore[comparison-overlap]
+                return dispatched_type.loaded_type
+            return tp
+
         def type_match(mtype: ty.Union[str, type], ftype: ty.Union[str, type]) -> bool:
             """Check if the types match between the method and function annotations,
             allowing for string annotations and `Self`
@@ -115,10 +156,30 @@ def extra_implementation(
                 the type of the function argument
             """
 
-            if isinstance(mtype, str) and not isinstance(ftype, str):
-                mtype = eval(mtype, implementation.__globals__)
+            # Compare `Loaded[X]` hints by their loaded types
+            if ty.get_origin(mtype) is Annotated:
+                mtype = ty.get_args(mtype)[0]
+            if ty.get_origin(ftype) is Annotated:
+                ftype = ty.get_args(ftype)[0]
 
-            if mtype is ty.Any or mtype == ftype:  # type: ignore[comparison-overlap]
+            if mtype is ty.Any:
+                return True
+
+            if isinstance(mtype, str) and not isinstance(ftype, str):
+                try:
+                    mtype = eval(mtype, implementation.__globals__)
+                except Exception:
+                    # a dotted-path `loaded_type` not imported into the module
+                    mtype = resolve_loaded_type(mtype)
+                    if mtype is ty.Any:
+                        return True
+            elif isinstance(ftype, str) and not isinstance(mtype, str):
+                try:
+                    ftype = eval(ftype, implementation.__globals__)
+                except Exception:
+                    return False
+
+            if mtype == ftype:  # type: ignore[comparison-overlap]
                 return True
 
             morigin = ty.get_origin(mtype)
@@ -166,7 +227,7 @@ def extra_implementation(
             mkwargs = msig_args.pop()
             if fhas_kwargs:
                 fkwargs = fsig_args.pop()
-                mkwargs_type = mkwargs.annotation
+                mkwargs_type = resolve_loaded_self(mkwargs.annotation)
                 fkwargs_type = fkwargs.annotation
                 if not type_match(mkwargs_type, fkwargs_type):
                     differences.append(
@@ -201,7 +262,7 @@ def extra_implementation(
                 continue
             mname = mparam.name
             fname = fparam.name
-            mtype = mparam.annotation
+            mtype = resolve_loaded_self(mparam.annotation)
             ftype = fparam.annotation
             if mname != fname:
                 differences.append(
@@ -215,13 +276,12 @@ def extra_implementation(
                         "implementing method also needs to be a string, i.e. "
                         f'"{ftype}" instead of {ftype}'
                     )
-        if not type_match(msig.return_annotation, fsig.return_annotation):
+        mreturn = resolve_loaded_self(msig.return_annotation)
+        if not type_match(mreturn, fsig.return_annotation):
             differences.append(
-                f"return type: {msig.return_annotation!r} vs {fsig.return_annotation!r}"
+                f"return type: {mreturn!r} vs {fsig.return_annotation!r}"
             )
-            if isinstance(msig.return_annotation, str) and not isinstance(
-                fsig.return_annotation, str
-            ):
+            if isinstance(mreturn, str) and not isinstance(fsig.return_annotation, str):
                 differences.append(
                     "Note that the return type of is annotated using a string so the "
                     "implementing method also needs to be a string, i.e. "

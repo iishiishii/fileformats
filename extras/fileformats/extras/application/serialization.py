@@ -95,10 +95,10 @@ d:
 def load(jsn: Json, **kwargs: ty.Any) -> SerializationType:
     try:
         with jsn.open() as f:
-            dct: ty.Dict[str, ty.Any] = json.load(f, **kwargs)
+            data: SerializationType = json.load(f, **kwargs)
     except json.JSONDecodeError as e:
         raise FormatMismatchError(f"'{jsn.fspath}' is not a valid JSON file") from e
-    return dct
+    return data
 
 
 @extra_implementation(FileSet.save)
