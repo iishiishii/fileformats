@@ -21,6 +21,7 @@ DataArrayType: TypeAlias = (
 class RasterImage(Image, BinaryFile):
     # iana_mime = None
     binary = True
+    loaded_type = "numpy.ndarray"
 
 
 class Bitmap(WithMagicNumber, RasterImage):

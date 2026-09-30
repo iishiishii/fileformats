@@ -1,11 +1,19 @@
 import platform
+import subprocess
+import sys
 import typing as ty
 from pathlib import Path
 
 import pytest
 from docx import Document
 
-from fileformats.core import FileSet, MockMixin, extra, extra_implementation
+from fileformats.core import (
+    FileSet,
+    MockMixin,
+    extra,
+    extra_implementation,
+    find_extra_implementation,
+)
 from fileformats.testing import Foo, WithExtra
 from fileformats.vendor.openxmlformats_officedocument.application import (
     Wordprocessingml_Document,
@@ -224,3 +232,142 @@ def test_extra_override():
     outside of the extras module."""
     wextra = WithExtra.sample()
     assert wextra.foo(2) == 6
+
+
+def _double_result(
+    impl: ty.Callable[..., float], woo: "WooWrapped", a: int, **kwargs: ty.Any
+) -> float:
+    if a < 0:
+        raise ValueError("a must be non-negative")
+    return 2 * impl(woo, a, **kwargs)
+
+
+class WooWrapped(FileSet):
+    @extra(wrapper=_double_result)
+    def test_extra_wrapped(self, a: int) -> float:
+        raise NotImplementedError
+
+
+class WooWrappedUnimplemented(FileSet):
+    @extra(wrapper=_double_result)
+    def test_extra_wrapped(self, a: int) -> float:
+        raise NotImplementedError
+
+
+@extra_implementation(WooWrapped.test_extra_wrapped)
+def woo_test_extra_wrapped(woo: WooWrapped, a: int) -> float:
+    return float(a)
+
+
+def test_extra_wrapper(tmp_path: Path):
+    fspath = tmp_path / "woo.txt"
+    fspath.write_text("woo")
+    assert WooWrapped(fspath).test_extra_wrapped(3) == 6.0
+    with pytest.raises(ValueError, match="non-negative"):
+        WooWrapped(fspath).test_extra_wrapped(-1)
+
+
+def test_extra_wrapper_not_implemented(tmp_path: Path):
+    """The base method's NotImplementedError propagates through the wrapper"""
+    fspath = tmp_path / "woo.txt"
+    fspath.write_text("woo")
+    with pytest.raises(NotImplementedError, match="No implementation"):
+        WooWrappedUnimplemented(fspath).test_extra_wrapped(3)
+
+
+def test_find_extra_implementation():
+    assert find_extra_implementation(WooWrapped.test_extra_wrapped, WooWrapped) is (
+        woo_test_extra_wrapped
+    )
+
+
+def test_find_extra_implementation_inherited():
+    class WooWrappedSub(WooWrapped):
+        pass
+
+    assert find_extra_implementation(WooWrapped.test_extra_wrapped, WooWrappedSub) is (
+        woo_test_extra_wrapped
+    )
+
+
+def test_find_extra_implementation_missing():
+    assert (
+        find_extra_implementation(
+            WooWrappedUnimplemented.test_extra_wrapped, WooWrappedUnimplemented
+        )
+        is None
+    )
+
+
+def test_find_extra_implementation_not_extra():
+    with pytest.raises(ValueError, match="not been defined as an extra"):
+        find_extra_implementation(FileSet.copy, FileSet)
+
+
+def test_extra_implementation_unresolvable_annotation():
+    """Annotations that can't be evaluated at runtime (e.g. types only imported when
+    type-checking) don't prevent the implementation from being registered"""
+
+    class WooUnresolvable(FileSet):
+        @extra
+        def test_extra_unresolvable(self) -> ty.Any:
+            raise NotImplementedError
+
+    @extra_implementation(WooUnresolvable.test_extra_unresolvable)
+    def woo_test_extra_unresolvable(
+        woo: WooUnresolvable,
+    ) -> "not_imported_module.Thing":  # type: ignore[name-defined]  # noqa: F821
+        return 1
+
+    assert (
+        find_extra_implementation(
+            WooUnresolvable.test_extra_unresolvable, WooUnresolvable
+        )
+        is woo_test_extra_unresolvable
+    )
+
+
+class WooOptional(FileSet):
+    @extra
+    def test_extra_optional(self, a: ty.Optional[int] = None) -> None:
+        raise NotImplementedError
+
+
+class WooOptionalSub(WooOptional):
+    pass
+
+
+def test_extra_signature_none_ignored_arg():
+    """An optional argument can be annotated with `None` in an implementation to
+    signify that it is ignored"""
+
+    @extra_implementation(WooOptional.test_extra_optional)
+    def woo_test_extra_optional(woo: WooOptionalSub, a: None = None) -> None:
+        pass
+
+
+def test_extra_signature_none_non_optional_arg():
+    with pytest.raises(TypeError, match="Type of 'a' arg"):
+
+        @extra_implementation(Woo.test_extra)
+        def woo_test_extra(woo: Woo, a: None, b: float) -> float:
+            pass
+
+
+def test_extra_inherited_from_other_namespace(tmp_path: Path):
+    """Implementations registered in the extras module of a base class in another
+    namespace are found, even if that module hasn't been imported yet (run in a separate
+    process so it definitely hasn't been)"""
+    fspath = tmp_path / "a.json"
+    fspath.write_text('{"a": 1}')
+    script = f"""
+import sys
+from fileformats.application import Json
+
+class OtherNamespaceJson(Json):
+    __module__ = "test_other_namespace"
+
+assert "fileformats.extras.application" not in sys.modules
+assert OtherNamespaceJson({str(fspath)!r}).load() == {{"a": 1}}
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)

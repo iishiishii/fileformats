@@ -6,6 +6,7 @@ from .base import Text
 # General formats
 class Plain(Text, UnicodeFile):
     iana_mime = "text/plain"
+    loaded_type = str
 
 
 class TextFile(Plain, UnicodeFile):

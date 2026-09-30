@@ -2,10 +2,10 @@ import functools
 import importlib
 import inspect
 import logging
-import sys
 import typing as ty
 import urllib.error
 from itertools import zip_longest
+from typing import Annotated, Self
 
 import fileformats.core
 from fileformats.core.typing import TypeAlias
@@ -17,12 +17,8 @@ from .exceptions import (
     FileFormatsExtrasNotImplementedError,
     FormatConversionError,
 )
+from .loaded import LoadedMarker, resolve_loaded_type
 from .utils import add_exc_note, check_package_exists_on_pypi, import_extras_module
-
-if sys.version_info < (3, 11):
-    from typing_extensions import Self
-else:
-    from typing import Self
 
 logger = logging.getLogger("fileformats")
 
@@ -32,11 +28,44 @@ if ty.TYPE_CHECKING:
 T = ty.TypeVar("T")
 ExtraImplementation = ty.TypeVar("ExtraImplementation", bound=ty.Callable[..., ty.Any])
 ExtraMethod = ty.TypeVar("ExtraMethod", bound=ty.Callable[..., ty.Any])
+# Called as `wrapper(implementation, obj, *args, **kwargs)`
+ExtraWrapper: TypeAlias = ty.Callable[..., ty.Any]
 
 
-def extra(method: ExtraMethod) -> "ExtraMethod":
+@ty.overload
+def extra(method: ExtraMethod) -> ExtraMethod: ...
+
+
+@ty.overload
+def extra(*, wrapper: ExtraWrapper) -> ty.Callable[[ExtraMethod], ExtraMethod]: ...
+
+
+def extra(
+    method: ty.Optional[ExtraMethod] = None,
+    *,
+    wrapper: ty.Optional[ExtraWrapper] = None,
+) -> ty.Union[ExtraMethod, ty.Callable[[ExtraMethod], ExtraMethod]]:
     """A decorator which uses singledispatch to facilitate the registering of
-    "extra" functionality in external packages (e.g. "fileformats-extras")"""
+    "extra" functionality in external packages (e.g. "fileformats-extras")
+
+    Parameters
+    ----------
+    method : Callable
+        the method to define as an extra hook. Its signature is what implementations
+        are checked against and its body is only called if there is no implementation
+        registered for the type (so it should just raise NotImplementedError)
+    wrapper : Callable, optional
+        a function wrapped around every call to the registered implementations, e.g.
+        to validate arguments or return values. It is called as
+        ``wrapper(implementation, obj, *args, **kwargs)`` and is responsible for
+        calling ``implementation(obj, *args, **kwargs)`` and returning its result
+    """
+    if method is None:
+
+        def extra_decorator(method: ExtraMethod) -> ExtraMethod:
+            return extra(method, wrapper=wrapper)  # type: ignore[call-overload, no-any-return]
+
+        return extra_decorator
 
     dispatch_method: ty.Callable[..., ty.Any] = functools.singledispatch(method)
 
@@ -46,8 +75,14 @@ def extra(method: ExtraMethod) -> "ExtraMethod":
         extras = []
         for tp in cls.referenced_types():  # type: ignore[attr-defined]
             extras.append(import_extras_module(tp))
+        if dispatch_method.dispatch(cls) is dispatch_method.dispatch(object):  # type: ignore[attr-defined]
+            # Nothing registered for the type yet, so try the extras modules of its base
+            # classes, e.g. for a format subclassing one from another namespace
+            _import_base_extras_modules(cls)
         try:
-            return dispatch_method(obj, *args, **kwargs)
+            if wrapper is None:
+                return dispatch_method(obj, *args, **kwargs)
+            return wrapper(dispatch_method, obj, *args, **kwargs)
         except NotImplementedError:
             msg = f"No implementation for {method.__name__!r} extra for {cls.__name__} types"
             for xtra in extras:
@@ -80,6 +115,47 @@ def extra(method: ExtraMethod) -> "ExtraMethod":
     return decorated_extra  # type: ignore[return-value]
 
 
+def _import_base_extras_modules(datatype: ty.Type[DataType]) -> None:
+    """Import the extras modules of the base classes of `datatype`, which may contain
+    implementations it inherits (e.g. if it subclasses a format from another namespace
+    or is defined outside of fileformats packages)"""
+    for base in datatype.__mro__[1:]:
+        if inspect.isclass(base) and issubclass(base, DataType):
+            import_extras_module(base)
+
+
+def find_extra_implementation(
+    method: ty.Callable[..., ty.Any], datatype: ty.Type[DataType]
+) -> ty.Optional[ty.Callable[..., ty.Any]]:
+    """Find the implementation of an extra method that would be called for the given
+    type, importing any extras modules that could contain it first
+
+    Parameters
+    ----------
+    method : Callable
+        the extra method, e.g. ``FileSet.load``
+    datatype : type[DataType]
+        the type to find the implementation for
+
+    Returns
+    -------
+    Callable or None
+        the registered implementation (which may be registered for a base class of
+        `datatype`), or None if there isn't one
+    """
+    try:
+        dispatch_method = method._dispatch  # type: ignore[attr-defined]
+    except AttributeError:
+        raise ValueError(f"{method} has not been defined as an extra method")
+    for tp in datatype.referenced_types():  # type: ignore[attr-defined]
+        import_extras_module(tp)
+    _import_base_extras_modules(datatype)
+    implementation: ty.Callable[..., ty.Any] = dispatch_method.dispatch(datatype)
+    if implementation is dispatch_method.dispatch(object):
+        return None
+    return implementation
+
+
 def extra_implementation(
     method: ExtraMethod,
 ) -> ty.Callable[[ExtraImplementation], ExtraImplementation]:
@@ -101,7 +177,19 @@ def extra_implementation(
         msig_args = list(msig.parameters.values())[1:]
         fsig_args = list(fsig.parameters.values())[1:]
         dispatched_type = list(fsig.parameters.values())[0].annotation
+        if isinstance(dispatched_type, str):
+            dispatched_type = eval(dispatched_type, implementation.__globals__)
         differences = []
+
+        def resolve_loaded_self(tp: ty.Any) -> ty.Any:
+            """Substitute `Loaded[Self]` in the method signature with the `loaded_type`
+            of the type the implementation is registered for. Dotted-path strings
+            (e.g. "pydicom.FileDataset") are left as is so they can be matched against
+            identical string annotations without importing the optional dependency"""
+            marker = LoadedMarker.from_hint(tp)
+            if marker is not None and marker.format is Self:  # type: ignore[comparison-overlap]
+                return dispatched_type.loaded_type
+            return tp
 
         def type_match(mtype: ty.Union[str, type], ftype: ty.Union[str, type]) -> bool:
             """Check if the types match between the method and function annotations,
@@ -115,11 +203,36 @@ def extra_implementation(
                 the type of the function argument
             """
 
-            if isinstance(mtype, str) and not isinstance(ftype, str):
-                mtype = eval(mtype, implementation.__globals__)
+            # Compare `Loaded[X]` hints by their loaded types
+            if ty.get_origin(mtype) is Annotated:
+                mtype = ty.get_args(mtype)[0]
+            if ty.get_origin(ftype) is Annotated:
+                ftype = ty.get_args(ftype)[0]
 
-            if mtype is ty.Any or mtype == ftype:  # type: ignore[comparison-overlap]
+            if mtype is ty.Any:
                 return True
+
+            if isinstance(mtype, str) and not isinstance(ftype, str):
+                try:
+                    mtype = eval(mtype, implementation.__globals__)
+                except Exception:
+                    # a dotted-path `loaded_type` not imported into the module
+                    mtype = resolve_loaded_type(mtype)
+                    if mtype is ty.Any:
+                        return True
+            elif isinstance(ftype, str) and not isinstance(mtype, str):
+                try:
+                    ftype = eval(ftype, implementation.__globals__)
+                except Exception:
+                    return False
+
+            if mtype == ftype:  # type: ignore[comparison-overlap]
+                return True
+
+            # Annotating an optional argument with `None` in an implementation is the
+            # standard way to signify that the implementation ignores it
+            if ftype is None or ftype is type(None):
+                return type(None) in ty.get_args(mtype)
 
             morigin = ty.get_origin(mtype)
             forigin = ty.get_origin(ftype)
@@ -166,7 +279,7 @@ def extra_implementation(
             mkwargs = msig_args.pop()
             if fhas_kwargs:
                 fkwargs = fsig_args.pop()
-                mkwargs_type = mkwargs.annotation
+                mkwargs_type = resolve_loaded_self(mkwargs.annotation)
                 fkwargs_type = fkwargs.annotation
                 if not type_match(mkwargs_type, fkwargs_type):
                     differences.append(
@@ -201,7 +314,7 @@ def extra_implementation(
                 continue
             mname = mparam.name
             fname = fparam.name
-            mtype = mparam.annotation
+            mtype = resolve_loaded_self(mparam.annotation)
             ftype = fparam.annotation
             if mname != fname:
                 differences.append(
@@ -215,13 +328,12 @@ def extra_implementation(
                         "implementing method also needs to be a string, i.e. "
                         f'"{ftype}" instead of {ftype}'
                     )
-        if not type_match(msig.return_annotation, fsig.return_annotation):
+        mreturn = resolve_loaded_self(msig.return_annotation)
+        if not type_match(mreturn, fsig.return_annotation):
             differences.append(
-                f"return type: {msig.return_annotation!r} vs {fsig.return_annotation!r}"
+                f"return type: {mreturn!r} vs {fsig.return_annotation!r}"
             )
-            if isinstance(msig.return_annotation, str) and not isinstance(
-                fsig.return_annotation, str
-            ):
+            if isinstance(mreturn, str) and not isinstance(fsig.return_annotation, str):
                 differences.append(
                     "Note that the return type of is annotated using a string so the "
                     "implementing method also needs to be a string, i.e. "
@@ -272,7 +384,11 @@ def extra_implementation(
                         f"An external implementation for {method} extra for {dispatched_type} already "
                         f"exists, overriding it with {implementation}: {dispatch_method.registry}"
                     )
-        dispatch_method.register(implementation)
+        # Register against the dispatched type explicitly, as otherwise singledispatch
+        # evaluates all the annotations of the implementation with get_type_hints()
+        # (on Python < 3.14), which fails for types from optional dependencies that are
+        # only imported when type-checking (e.g. "numpy.ndarray")
+        dispatch_method.register(dispatched_type, implementation)
         return implementation
 
     return extra_implementation_decorator

@@ -11,7 +11,8 @@ from .identification import (
     from_paths,
 )
 from .sampling import SampleFileGenerator
-from .extras import extra, extra_implementation, converter
+from .extras import extra, extra_implementation, find_extra_implementation, converter
+from .loaded import Loaded, LoadedMarker, check_loaded
 from .decorators import validated_property, mtime_cached_property
 
 __all__ = [
@@ -31,7 +32,11 @@ __all__ = [
     "SampleFileGenerator",
     "extra",
     "extra_implementation",
+    "find_extra_implementation",
     "converter",
+    "Loaded",
+    "LoadedMarker",
+    "check_loaded",
     "validated_property",
     "mtime_cached_property",
 ]

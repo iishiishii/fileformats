@@ -1,11 +1,12 @@
 import typing as ty
 
 
-# import numpy  # noqa: F401
-# import typing  # noqa: F401
 from fileformats.extras.core import check_optional_dependency
 from fileformats.core import FileSet, extra_implementation
-from fileformats.image.raster import RasterImage, DataArrayType
+from fileformats.image.raster import RasterImage
+
+if ty.TYPE_CHECKING:
+    import numpy
 
 try:
     import imageio  # noqa: F401
@@ -14,7 +15,7 @@ except ImportError:
 
 
 @extra_implementation(FileSet.load)
-def read_raster_data(image: RasterImage, **kwargs: ty.Any) -> DataArrayType:
+def read_raster_data(image: RasterImage, **kwargs: ty.Any) -> "numpy.ndarray":
     check_optional_dependency(imageio)
 
     return imageio.imread(image.fspath)  # type: ignore
@@ -22,7 +23,7 @@ def read_raster_data(image: RasterImage, **kwargs: ty.Any) -> DataArrayType:
 
 @extra_implementation(FileSet.save)
 def write_raster_data(
-    image: RasterImage, data: DataArrayType, **kwargs: ty.Any
+    image: RasterImage, data: "numpy.ndarray", **kwargs: ty.Any
 ) -> None:
     check_optional_dependency(imageio)
 

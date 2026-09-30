@@ -6,8 +6,8 @@ build-backend = "hatchling.build"
 name = "fileformats"
 description = "Classes for representing different file formats in Python classes for use in type hinting in data workflows"
 readme = "README.md"
-requires-python = ">=3.8"
-dependencies = ["typing_extensions >=4.6.3; python_version < '3.11'"]
+requires-python = ">=3.11"
+dependencies = ["typing_extensions >=4.6.3; python_version < '3.13'"]
 license = { file = "LICENSE" }
 authors = [{ name = "Thomas G. Close", email = "tom.g.close@gmail.com" }]
 maintainers = [{ name = "Thomas G. Close", email = "tom.g.close@gmail.com" }]
@@ -45,6 +45,7 @@ dev = [
     "mypy >=1.5.1",
     "pydata-sphinx-theme >=0.13",
     "pydicom",                    # for typing
+    "types-PyYAML",               # for typing
 ]
 test = [
     "mypy >=1.5.1",
@@ -84,7 +85,7 @@ exclude = ["tests"]
 include = ["./fileformats"]
 
 [tool.black]
-target-version = ['py310']
+target-version = ['py311']
 exclude = "fileformats/core/_version.py"
 
 

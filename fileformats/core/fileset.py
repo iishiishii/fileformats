@@ -44,10 +44,11 @@ from .exceptions import (
 from .extras import extra
 from .fs_mount_identifier import FsMountIdentifier
 from .identification import IANA_MIME_TYPE_REGISTRIES, to_mime_format_name
+from .loaded import Loaded, check_loaded
 from .mock import MockMixin
 from .sampling import SampleFileGenerator
 from .typing import CryptoMethod, FspathsInputType, PathType
-from .utils import fspaths_converter, import_extras_module
+from .utils import add_exc_note, fspaths_converter, import_extras_module
 
 if ty.TYPE_CHECKING:
     from .converter_helpers import Converter
@@ -142,6 +143,39 @@ class FileSetMetadata(ty.MutableMapping[str, ty.Any]):
         return merged
 
 
+def _check_load_result(
+    load: ty.Callable[..., ty.Any],
+    fileset: "FileSet",
+    **kwargs: ty.Any,
+) -> ty.Any:
+    """Check that the data returned by the `load` implementation is of the
+    `loaded_type` of the fileset"""
+    data = load(fileset, **kwargs)
+    try:
+        check_loaded(type(fileset), data)
+    except TypeError as e:
+        impl = load.dispatch(type(fileset))  # type: ignore[attr-defined]
+        add_exc_note(
+            e,
+            f"Returned by the {impl.__module__}.{impl.__qualname__} implementation of "
+            f"'load', which is a bug in that implementation (or in the `loaded_type` "
+            f"of {type(fileset).type_name}), please report it to the package maintainers",
+        )
+        raise
+    return data
+
+
+def _check_save_data(
+    save: ty.Callable[..., None],
+    fileset: "FileSet",
+    data: ty.Any,
+    **kwargs: ty.Any,
+) -> None:
+    """Check that `data` is of the `loaded_type` of the fileset before saving it"""
+    check_loaded(type(fileset), data)
+    save(fileset, data, **kwargs)
+
+
 class FileSet(DataType):
     """
     The base class for all format types within the fileformats package. A generic
@@ -182,6 +216,11 @@ class FileSet(DataType):
     # type to None for any base classes that should not correspond to a MIME or MIME-like
     # type.
     iana_mime = ""
+
+    # The type of the object returned by `load` (and accepted by `save`) for the
+    # `Loaded[Format]` annotation, either a type or a dotted-path string (e.g.
+    # "pydicom.FileDataset") for types from optional dependencies
+    loaded_type: ty.ClassVar[ty.Any] = ty.Any
 
     # Member attributes
     fspaths: ty.FrozenSet[Path]
@@ -277,8 +316,8 @@ class FileSet(DataType):
     def __repr__(self) -> str:
         return f"{self.type_name}('" + "', '".join(str(p) for p in self.fspaths) + "')"
 
-    @extra
-    def load(self, **kwargs: ty.Any) -> ty.Any:
+    @extra(wrapper=_check_load_result)
+    def load(self, **kwargs: ty.Any) -> Loaded[Self]:
         """Load the contents of the file into an object of type that make sense for the
         datat type
 
@@ -289,27 +328,39 @@ class FileSet(DataType):
 
         Returns
         -------
-        Any
-            the data loaded from the file in an type to the format
+        Loaded[Self]
+            the data loaded from the file, of type `loaded_type`
+
+        Raises
+        ------
+        TypeError
+            if the implementation returns data that isn't of the format's `loaded_type`
         """
         raise NotImplementedError
 
-    @extra
-    def save(self, data: ty.Any, **kwargs: ty.Any) -> None:
-        """Load new contents from a format-specific object
+    @extra(wrapper=_check_save_data)
+    def save(self, data: Loaded[Self], **kwargs: ty.Any) -> None:
+        """Save new contents from a format-specific object
 
         Parameters
         ----------
-        data: Any
-            the data to be saved to the file in a type that matches the one loaded by
-            the `load` method
+        data: Loaded[Self]
+            the data to be saved to the file, of type `loaded_type` (i.e. matching the
+            one returned by the `load` method)
         **kwargs : Any
             any format-specific keyword arguments to pass to the saver
+
+        Raises
+        ------
+        TypeError
+            if `data` isn't an instance of the format's `loaded_type`
         """
         raise NotImplementedError
 
     @classmethod
-    def new(cls, fspath: ty.Union[str, Path], data: ty.Any, **kwargs: ty.Any) -> Self:
+    def new(
+        cls, fspath: ty.Union[str, Path], data: Loaded[Self], **kwargs: ty.Any
+    ) -> Self:
         """Create a new file-set object with the given data saved to the file
 
         Parameters
@@ -317,9 +368,9 @@ class FileSet(DataType):
         fspath: str | Path
             the file-system path to save the data to. Additional paths should be
             able to be inferred from this path
-        data: Any
-            the data to be saved to the file in a type that matches the one loaded by
-            the `load` method
+        data: Loaded[Self]
+            the data to be saved to the file, of type `loaded_type` (i.e. matching the
+            one returned by the `load` method)
         **kwargs : Any
             any format-specific keyword arguments to pass to the saver
 
