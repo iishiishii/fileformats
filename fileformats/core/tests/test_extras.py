@@ -300,3 +300,26 @@ def test_find_extra_implementation_missing():
 def test_find_extra_implementation_not_extra():
     with pytest.raises(ValueError, match="not been defined as an extra"):
         find_extra_implementation(FileSet.copy, FileSet)
+
+
+def test_extra_implementation_unresolvable_annotation():
+    """Annotations that can't be evaluated at runtime (e.g. types only imported when
+    type-checking) don't prevent the implementation from being registered"""
+
+    class WooUnresolvable(FileSet):
+        @extra
+        def test_extra_unresolvable(self) -> ty.Any:
+            raise NotImplementedError
+
+    @extra_implementation(WooUnresolvable.test_extra_unresolvable)
+    def woo_test_extra_unresolvable(
+        woo: WooUnresolvable,
+    ) -> "not_imported_module.Thing":  # type: ignore[name-defined]  # noqa: F821
+        return 1
+
+    assert (
+        find_extra_implementation(
+            WooUnresolvable.test_extra_unresolvable, WooUnresolvable
+        )
+        is woo_test_extra_unresolvable
+    )

@@ -171,6 +171,8 @@ def extra_implementation(
         msig_args = list(msig.parameters.values())[1:]
         fsig_args = list(fsig.parameters.values())[1:]
         dispatched_type = list(fsig.parameters.values())[0].annotation
+        if isinstance(dispatched_type, str):
+            dispatched_type = eval(dispatched_type, implementation.__globals__)
         differences = []
 
         def resolve_loaded_self(tp: ty.Any) -> ty.Any:
@@ -371,7 +373,11 @@ def extra_implementation(
                         f"An external implementation for {method} extra for {dispatched_type} already "
                         f"exists, overriding it with {implementation}: {dispatch_method.registry}"
                     )
-        dispatch_method.register(implementation)
+        # Register against the dispatched type explicitly, as otherwise singledispatch
+        # evaluates all the annotations of the implementation with get_type_hints()
+        # (on Python < 3.14), which fails for types from optional dependencies that are
+        # only imported when type-checking (e.g. "numpy.ndarray")
+        dispatch_method.register(dispatched_type, implementation)
         return implementation
 
     return extra_implementation_decorator
