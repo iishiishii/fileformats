@@ -697,6 +697,13 @@ class FileSet(DataType):
         if converter is None:
             assert isinstance(fileset, cls)
             return copy(fileset)
+        if converter.is_chain:
+            from .converter_chain import assign_kwargs
+
+            # Check the kwargs can be assigned to the converters in the chain before
+            # running the workflow, where they are applied
+            assign_kwargs(converter.task.chain, kwargs)
+            kwargs = {"converter_kwargs": kwargs} if kwargs else {}
         kwargs[converter.in_file] = fileset
         task = attrs.evolve(converter.task, **kwargs)
         # We need to use a fresh cache root each time to avoid picking up previous
@@ -711,6 +718,7 @@ class FileSet(DataType):
     def get_converter(
         cls,
         source_format: ty.Type[DataType],
+        allow_chains: bool = True,
     ) -> "ty.Optional[Converter]":
         """Get a converter that converts from the source format type
         into the format specified by the class
@@ -719,10 +727,9 @@ class FileSet(DataType):
         ----------
         source_format : type
             the format to convert from
-        name : str
-            the name given to the converter task
-        **kwargs
-            evolve the task definition
+        allow_chains : bool, optional
+            whether to chain converters together to convert via intermediate formats
+            if there is no direct converter available, by default True
 
         Returns
         -------
@@ -739,44 +746,110 @@ class FileSet(DataType):
         """
         if issubclass(source_format, cls):
             return None
-        # trigger loading of standard converters for target format
-        converters = cls.get_converters_dict()
         # import extras modules
         source_format._import_extras_module()  # type: ignore[attr-defined]
-        cls._import_extras_module()
-        try:
-            converter = converters[source_format]
-        except KeyError:
+
+        def find_direct(target: type[FileSet]) -> "Converter | None":
+            """Find a converter directly from the source format to the given target"""
+            # trigger loading of standard converters for target format
+            converters = target.get_converters_dict()
+            target._import_extras_module()
+            try:
+                return converters[source_format]
+            except KeyError:
+                pass
             # If no direct mapping check for mapping from source super types and wildcard
             # matches
-            available_converters = cls.get_converter_defs(source_format)
+            available_converters = target.get_converter_defs(source_format)
             if len(available_converters) > 1:
                 # FIXME: Hack to avoid situation where multiple converters get added but are identical
                 if all(a == available_converters[0] for a in available_converters[1:]):
                     available_converters = [available_converters[0]]
                 else:
-                    available_converters[0] == available_converters[1]
                     available_str = "\n".join(str(a.task) for a in available_converters)
                     raise FormatConversionError(
-                        f"Ambiguous converters found between '{cls.mime_like}' and "
+                        f"Ambiguous converters found between '{target.mime_like}' and "
                         f"'{source_format.mime_like}':\n{available_str}"
                     ) from None
             if not available_converters:
-                msg = (
-                    f"Could not find converter between '{source_format.mime_like}' and "
-                    f"'{cls.mime_like}' formats"
-                )
-                extras_mod = import_extras_module(cls)
-                if not extras_mod.imported:
-                    msg += (
-                        f'. Was not able to import "extras" module, {extras_mod.pkg}, '
-                        f"you may want to try installing the '{extras_mod.pypi}' package "
-                        f"from PyPI (e.g. pip install {extras_mod.pypi}) or check it isn't broken"
-                    )
-                raise FormatConversionError(msg) from None
+                return None
             converter = available_converters[0]
             # Store mapping for future reference
             converters[source_format] = converter
+            return converter
+
+        converter = find_direct(cls)
+        if converter is not None and (allow_chains or not converter.is_chain):
+            return converter
+        # If there is no direct converter, search back from the target format through
+        # the formats that can be converted into it (breadth-first, so the shortest
+        # chains are found) until one is found that the source format can be converted
+        # into directly
+        chains: list[list[Converter]] = []
+        visited: set[type] = {cls, source_format}
+        # Formats to search from, along with the chain of converters from them to the
+        # target format
+        level: list[tuple[type[FileSet], list[Converter]]] = [(cls, [])]
+        while allow_chains and level and not chains:
+            next_level = []
+            for target, downstream in level:
+                for intermediate, conv in list(target.get_converters_dict().items()):
+                    # Skip converters with wildcards, as the intermediate format they
+                    # convert from isn't fully defined, previously cached chains, and
+                    # formats already searched to avoid circular conversions
+                    if (
+                        conv.classifiers
+                        or conv.is_chain
+                        or not (
+                            inspect.isclass(intermediate)
+                            and issubclass(intermediate, FileSet)
+                        )
+                        or intermediate in visited
+                    ):
+                        continue
+                    chain = [conv] + downstream
+                    first = find_direct(intermediate)
+                    if first is None:
+                        next_level.append((intermediate, chain))
+                    elif first.is_chain:
+                        # Flatten previously cached chains
+                        chains.append(list(first.task.chain) + chain)
+                    else:
+                        chains.append([first] + chain)
+            # Mark visited only after the whole level has been searched so that all
+            # alternative chains of the same length are found
+            visited.update(f for f, _ in next_level)
+            level = next_level
+        if not chains:
+            msg = (
+                f"Could not find converter between '{source_format.mime_like}' and "
+                f"'{cls.mime_like}' formats"
+            )
+            extras_mod = import_extras_module(cls)
+            if not extras_mod.imported:
+                msg += (
+                    f'. Was not able to import "extras" module, {extras_mod.pkg}, '
+                    f"you may want to try installing the '{extras_mod.pypi}' package "
+                    f"from PyPI (e.g. pip install {extras_mod.pypi}) or check it isn't broken"
+                )
+            raise FormatConversionError(msg)
+
+        def chain_sort_key(chain: list[Converter]) -> tuple[int, int, list[str]]:
+            """Favour shorter chains, then those with fewer templated (i.e. wildcard
+            or generic) converters, then alphabetical order of converter names"""
+            num_templated = sum(
+                bool(c.classifiers)
+                or any(c is t for t in SubtypeVar.converters.values())
+                for c in chain
+            )
+            return (len(chain), num_templated, [type(c.task).__name__ for c in chain])
+
+        from .converter_chain import ConverterChain
+        from .converter_helpers import Converter
+
+        converter = Converter(ConverterChain(chain=min(chains, key=chain_sort_key)))
+        # Store mapping for future reference
+        cls.get_converters_dict()[source_format] = converter
         return converter
 
     @classmethod
@@ -883,9 +956,8 @@ class FileSet(DataType):
         available = []
         for src_frmt, converter in converters_dict.items():
             # Ignore converters with wildcards at this point
-            if not converter.classifiers:
-                if issubclass(source_format, src_frmt):
-                    available.append(converter)
+            if not converter.classifiers and issubclass(source_format, src_frmt):
+                available.append(converter)
         if not available and hasattr(source_format, "unclassified"):
             available = SubtypeVar.get_converter_defs(source_format, target_format=cls)
         return available

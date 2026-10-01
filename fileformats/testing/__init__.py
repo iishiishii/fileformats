@@ -8,6 +8,18 @@ from .abstract import (
     ConvertibleToFile,
 )
 from .basic import Bar, Baz, Foo, Qux
+from .chains import (
+    AmbiguousDst,
+    AmbiguousMid1,
+    AmbiguousMid2,
+    AmbiguousSrc,
+    ChainDst,
+    ChainMid,
+    ChainSrc,
+    CycleA,
+    CycleB,
+    CycleC,
+)
 from .classifiers.file import A, B, C, D, E, F, G, H, J, K, L, M, N, P, Q, R, TestField
 from .classifiers.generic import Classified, U, V, W, X, Y, Z
 from .headers import (
@@ -83,4 +95,14 @@ __all__ = [
     "AnotherConcreteClass",
     "ConvertibleToFile",
     "WithExtra",
+    "ChainSrc",
+    "ChainMid",
+    "ChainDst",
+    "CycleA",
+    "CycleB",
+    "CycleC",
+    "AmbiguousSrc",
+    "AmbiguousMid1",
+    "AmbiguousMid2",
+    "AmbiguousDst",
 ]
