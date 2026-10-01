@@ -2,6 +2,7 @@ import os.path
 import random
 import shutil
 import time
+import warnings
 import typing as ty
 from pathlib import Path
 
@@ -442,6 +443,91 @@ def test_decompose_fspaths(work_dir):
         decomposed = double_bar.decomposed_fspaths()
 
     assert decomposed == [(work_dir, "file.luigi", ".mario")]
+
+
+def test_decompose_fspaths_drops_subpaths(work_dir):
+    sub_dir = work_dir / "sub"
+    sub_dir.mkdir()
+    Path.touch(sub_dir / "nested.mario")
+    Path.touch(sub_dir / "deeper.mario")
+    Path.touch(work_dir / "sibling.mario")
+
+    fileset = FileSet(
+        [
+            sub_dir,
+            sub_dir / "nested.mario",
+            sub_dir / "deeper.mario",
+            work_dir / "sibling.mario",
+        ]
+    )
+
+    decomposed = fileset.decomposed_fspaths(required_only=False)
+
+    assert sorted(decomposed) == [
+        (work_dir, "sibling", ".mario"),
+        (work_dir, "sub", ""),
+    ]
+
+
+def test_decompose_fspaths_ignores_external_nested_filesets(work_dir):
+    class MarioWithExternals(Mario):
+        @validated_property
+        def sidecar(self):
+            # extension isn't constrained
+            return File(self.fspath.with_suffix(".sidecar"))
+
+        @validated_property
+        def header(self):
+            # extension is constrained
+            return Mario(self.fspath.with_name("header.mario"))
+
+    fspath = work_dir / "file.mario"
+    Path.touch(fspath)
+    Path.touch(work_dir / "file.sidecar")
+    Path.touch(work_dir / "header.mario")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        decomposed = MarioWithExternals(fspath).decomposed_fspaths()
+
+    assert decomposed == [(work_dir, "file", ".mario")]
+
+
+def test_decompose_fspaths_nested_fileset_in_directory(work_dir):
+    class MarioDir(Directory):
+        @validated_property
+        def header(self):
+            return Mario(self.fspath / "header.mario")
+
+    mario_dir = work_dir / "mario_dir"
+    mario_dir.mkdir()
+    Path.touch(mario_dir / "header.mario")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        decomposed = MarioDir(mario_dir).decomposed_fspaths()
+
+    assert decomposed == [(work_dir, "mario_dir", "")]
+
+
+def test_copy_with_subpaths(work_dir):
+    src_dir = work_dir / "src"
+    src_dir.mkdir()
+    sub_dir = src_dir / "sub"
+    sub_dir.mkdir()
+    (sub_dir / "nested.mario").write_text("nested")
+    (src_dir / "sibling.mario").write_text("sibling")
+    dest_dir = work_dir / "dest"
+    dest_dir.mkdir()
+
+    fileset = FileSet([sub_dir, sub_dir / "nested.mario", src_dir / "sibling.mario"])
+    copied = fileset.copy(dest_dir, trim=False)
+
+    assert sorted(p.relative_to(dest_dir) for p in copied.fspaths) == [
+        Path("sibling.mario"),
+        Path("sub"),
+    ]
+    assert (dest_dir / "sub" / "nested.mario").read_text() == "nested"
 
 
 def test_hash(tmp_path: Path):
