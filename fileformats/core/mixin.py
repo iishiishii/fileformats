@@ -89,6 +89,9 @@ class WithMagicVersion:
         be read from the file, by default it will be the length of the magic_pattern
         string (which will probably be longer than the string it matches due to the
         special characters in the regex)
+
+    Override `decode_version` to control how the bytes captured by the groups in the
+    magic pattern are translated into version strings (UTF-8 decoding by default)
     """
 
     binary: bool
@@ -110,7 +113,9 @@ class WithMagicVersion:
                 f"Byte-string of length {read_length} at {self.magic_pattern_offset} "
                 f"({read_bytes!r}), doesn't match expected pattern, {self.magic_pattern!r}"
             )
-        version: ty.Tuple[str, ...] = tuple(b.decode("utf-8") for b in match.groups())
+        version: ty.Tuple[str, ...] = tuple(
+            self.decode_version(b) for b in match.groups()
+        )
         if not version:
             raise FormatDefinitionError(
                 f"No version patterns found in magic pattern of {type(self).__name__} "
@@ -119,6 +124,24 @@ class WithMagicVersion:
         if len(version) == 1:
             return version[0]
         return version
+
+    @classmethod
+    def decode_version(cls, version_bytes: bytes) -> str:
+        """Translates the bytes captured by a group in the magic pattern into a version
+        string. Override in subclasses where the version isn't encoded as text, e.g.
+        a version number stored as a raw byte value
+
+        Parameters
+        ----------
+        version_bytes : bytes
+            the bytes captured by a group in the magic pattern
+
+        Returns
+        -------
+        str
+            the version string
+        """
+        return version_bytes.decode("utf-8")
 
 
 class WithAdjacentFiles:
