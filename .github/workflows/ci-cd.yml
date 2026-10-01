@@ -45,7 +45,7 @@ jobs:
     - name: Install Package
       run: python -m pip install -e ".[test]"
     - name: Install Extras Package
-      run: python3 -m pip install -e ./extras[test,application,image,vnd_openxmlformats]
+      run: python3 -m pip install -e ./extras[test,application,image,vendor_openxmlformats_officedocument]
     - name: MyPy
       run: mypy --install-types --non-interactive --no-warn-unused-ignores --python-version "${{ matrix.python-version }}" .
     - name: Pytest
