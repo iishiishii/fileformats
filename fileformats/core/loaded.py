@@ -52,6 +52,32 @@ class LoadedMarker:
             if len(args) != 1:
                 return None
             tp = args[0]
+        return cls._from_annotated(tp)
+
+    @classmethod
+    def all_from_hint(cls, tp: ty.Any) -> ty.Optional[ty.List["LoadedMarker"]]:
+        """Return the markers of a union of ``Loaded[X]`` hints, optionally including
+        None (e.g. ``Loaded[X] | Loaded[Y] | None``), in the order they appear, which
+        callers can use to find the formats that data can be loaded from. A single
+        ``Loaded[X]`` hint returns a one-item list.
+
+        Returns None if any member of the union (other than None) isn't a
+        ``Loaded[X]`` hint, or for any other hint.
+
+        Hints must be obtained with ``get_type_hints(..., include_extras=True)`` or
+        ``inspect.signature(..., eval_str=True)``, otherwise ``Annotated`` is stripped.
+        """
+        if ty.get_origin(tp) in (ty.Union, types.UnionType):
+            args = [a for a in ty.get_args(tp) if a is not type(None)]
+        else:
+            args = [tp]
+        markers = [cls._from_annotated(a) for a in args]
+        if not markers or any(m is None for m in markers):
+            return None
+        return markers  # type: ignore[return-value]
+
+    @classmethod
+    def _from_annotated(cls, tp: ty.Any) -> ty.Optional["LoadedMarker"]:
         if ty.get_origin(tp) is Annotated:
             for meta in tp.__metadata__:
                 if isinstance(meta, cls):

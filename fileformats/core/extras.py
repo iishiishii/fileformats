@@ -2,6 +2,7 @@ import functools
 import importlib
 import inspect
 import logging
+import types
 import typing as ty
 import urllib.error
 from itertools import zip_longest
@@ -233,6 +234,20 @@ def extra_implementation(
             # standard way to signify that the implementation ignores it
             if ftype is None or ftype is type(None):
                 return type(None) in ty.get_args(mtype)
+
+            # A union in the implementation matches if each of its members matches a
+            # member of the method's union (or the method's type if it isn't a union),
+            # i.e. implementations can accept a subset of what the method accepts, e.g.
+            # `Loaded[X] | Loaded[Y] | None` for `Loaded[FileSet] | None`
+            if ty.get_origin(ftype) in (ty.Union, types.UnionType):
+                margs = (
+                    ty.get_args(mtype)
+                    if ty.get_origin(mtype) in (ty.Union, types.UnionType)
+                    else (mtype,)
+                )
+                return all(
+                    any(type_match(mt, ft) for mt in margs) for ft in ty.get_args(ftype)
+                )
 
             morigin = ty.get_origin(mtype)
             forigin = ty.get_origin(ftype)

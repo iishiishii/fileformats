@@ -161,3 +161,67 @@ def test_loaded_fileset_accepts_loaded_format() -> None:
     hint = ty.get_type_hints(impl, include_extras=True)["recipe"]
     marker = LoadedMarker.from_hint(hint)
     assert marker is not None and marker.format is Json
+
+
+def test_loaded_all_from_hint() -> None:
+    assert LoadedMarker.all_from_hint(Loaded[DeidSpec] | Loaded[Json] | None) == [
+        LoadedMarker(DeidSpec),
+        LoadedMarker(Json),
+    ]
+    assert LoadedMarker.all_from_hint(Loaded[Json]) == [LoadedMarker(Json)]
+    assert LoadedMarker.all_from_hint(Loaded[Json] | None) == [LoadedMarker(Json)]
+    assert LoadedMarker.all_from_hint(Loaded[Json] | int) is None
+    assert LoadedMarker.all_from_hint(int | None) is None
+    assert LoadedMarker.all_from_hint(None) is None
+
+
+class RecipientUnionSub(Recipient):
+    pass
+
+
+def test_loaded_union_accepted_by_signature_check() -> None:
+    """An implementation can accept a union of loaded formats where the extra method
+    accepts `Loaded[FileSet] | None`"""
+
+    @extra_implementation(Recipient.apply)
+    def apply(
+        recipient: RecipientUnionSub,
+        recipe: Loaded[DeidSpec] | Loaded[Json] | None = None,
+    ) -> None:
+        pass
+
+    impl = find_extra_implementation(Recipient.apply, RecipientUnionSub)
+    assert impl is apply
+    hint = ty.get_type_hints(impl, include_extras=True)["recipe"]
+    assert [m.format for m in LoadedMarker.all_from_hint(hint)] == [DeidSpec, Json]
+
+
+class Numeric(FileSet):
+    @extra
+    def scale(self, factor: int | float | None = None) -> None:
+        raise NotImplementedError
+
+
+class NumericSub(Numeric):
+    pass
+
+
+class NumericBadSub(Numeric):
+    pass
+
+
+def test_union_subset_accepted_by_signature_check() -> None:
+    @extra_implementation(Numeric.scale)
+    def scale(numeric: NumericSub, factor: int | None = None) -> None:
+        pass
+
+    assert find_extra_implementation(Numeric.scale, NumericSub) is scale
+
+
+def test_union_not_accepted_by_method_rejected() -> None:
+    """Each member of a union in the implementation must be accepted by the method"""
+    with pytest.raises(TypeError, match="Arguments differ"):
+
+        @extra_implementation(Numeric.scale)
+        def scale(numeric: NumericBadSub, factor: int | str | None = None) -> None:
+            pass
