@@ -1413,9 +1413,24 @@ class FileSet(DataType):
             if required_only and self.required_paths()
             else self.fspaths
         )
-        nested = self.nested_filesets()
-        for fileset in [self] + nested:
+
+        def is_subpath(path: Path, others: ty.Iterable[Path]) -> bool:
+            return any(path != o and path.is_relative_to(o) for o in others)
+
+        # Paths that are to be included in the decomposition
+        to_include = frozenset(implicit)
+        # Maps paths decomposed by a typed file-set to the file-set and its decomposition
+        decomposed_by: dict[Path, tuple[FileSet, tuple[Path, str, str]]] = {}
+        for fileset in [self] + self.nested_filesets():
             if isinstance(fileset, File):
+                # Skip files that are nested within other paths (e.g. directories) of
+                # the file-set, as they will be handled along with their parent
+                if is_subpath(fileset.fspath, self.fspaths):
+                    implicit.discard(fileset.fspath)
+                    continue
+                # Skip files that aren't to be included (e.g. not required)
+                if fileset.fspath not in to_include:
+                    continue
                 try:
                     decomposed = (
                         fileset.fspath.parent,
@@ -1423,22 +1438,17 @@ class FileSet(DataType):
                         fileset.actual_ext,
                     )
                 except UnconstrainedExtensionException:
-                    implicit.add(fileset.fspath)
+                    # Leave in implicit to be decomposed with the default mode, unless
+                    # it has already been decomposed by a typed file-set
                     continue
                 if fileset.fspath in implicit:
                     decomposed_fspaths.append(decomposed)
                     implicit.remove(fileset.fspath)
-                elif decomposed not in decomposed_fspaths:
-                    previous_fileset = next(
-                        f
-                        for f in nested
-                        if isinstance(f, File) and f.fspath == fileset.fspath
-                    )
-                    previous = (
-                        previous_fileset.fspath.parent,
-                        previous_fileset.stem,
-                        previous_fileset.actual_ext,
-                    )
+                    decomposed_by[fileset.fspath] = (fileset, decomposed)
+                else:
+                    previous_fileset, previous = decomposed_by[fileset.fspath]
+                    if previous == decomposed:
+                        continue
                     warn(
                         f"The '{fileset.fspath}' path within {self} into has been decomposed as "
                         f"{previous} as it was interpreted as a {type(previous_fileset)} "
@@ -1449,7 +1459,14 @@ class FileSet(DataType):
             decomposed_fspaths.append(
                 self.decompose_fspath(fspath, mode=decomposition_mode)
             )
-        return decomposed_fspaths
+        # Drop any paths that are nested within other paths in the set, as they will
+        # be copied/moved along with their parent
+        full_paths = [p / (s + e) for p, s, e in decomposed_fspaths]
+        return [
+            d
+            for d, fp in zip(decomposed_fspaths, full_paths)
+            if not is_subpath(fp, full_paths)
+        ]
 
     @classmethod
     def decompose_fspath(
