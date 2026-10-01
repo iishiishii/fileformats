@@ -105,7 +105,7 @@ class AmrWb(Audio):
     alternate_exts = (".AWB",)
 
 
-class AmrWb___(Audio):
+class AmrWb__(Audio):
     """This MIME type is not applicable for file storage.
     Instead, file storage of AMR-WB+ encoded audio is
     specified within the 3GPP-defined ISO-based multimedia
@@ -950,7 +950,7 @@ __all__ = [
     "Ac3",
     "Amr",
     "AmrWb",
-    "AmrWb___",
+    "AmrWb__",
     "Aptx",
     "Asc",
     "AtracAdvancedLossless",

@@ -43,7 +43,7 @@ from .exceptions import (
 )
 from .extras import extra
 from .fs_mount_identifier import FsMountIdentifier
-from .identification import IANA_MIME_TYPE_REGISTRIES, to_mime_format_name
+from .identification import IANA_MIME_TYPE_REGISTRIES, formats_by_mime_format_name
 from .loaded import Loaded, check_loaded
 from .mock import MockMixin
 from .sampling import SampleFileGenerator
@@ -436,7 +436,7 @@ class FileSet(DataType):
         assert isinstance(mime_type, str)
         if mime_type:
             return mime_type
-        format_name = to_mime_format_name(cls.__name__)  # type: ignore[attr-defined]
+        format_name = cls._mime_format_name()
         return f"application/x-{format_name}"
 
     @classproperty  # type: ignore[arg-type]
@@ -970,8 +970,8 @@ class FileSet(DataType):
                 k: set(v for _, v in g)
                 for k, g in itertools.groupby(
                     sorted(
-                        (
-                            (to_mime_format_name(f.__name__), f)
+                        formats_by_mime_format_name(
+                            f
                             for f in FileSet.all_formats
                             if not f.__dict__.get("iana_mime", "")
                         ),

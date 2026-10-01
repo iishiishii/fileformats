@@ -3,7 +3,7 @@ import typing as ty
 
 import pytest
 
-from fileformats.application import Cdfx___Xml, Zip
+from fileformats.application import Cdfx__Xml, Zip
 from fileformats.core import DataType
 from fileformats.core.identification import from_mime, to_mime
 from fileformats.generic import DirectoryOf, FileSet
@@ -64,7 +64,7 @@ UNION_TYPE = U | V if sys.version_info >= (3, 10) else ty.Union[U, V]
             DirectoryOf[Wordprocessingml_Document],
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document+directory-of",
         ],
-        [Cdfx___Xml, "application/vnd.ms-cdfx+xml"],
+        [Cdfx__Xml, "application/vnd.ms-cdfx+xml"],
         [UNION_TYPE, "testing/u,testing/v"],
     ],
 )
@@ -152,10 +152,44 @@ def test_vendor_in_container_roundtrip() -> None:
 
 def test_native_container_roundtrip() -> None:
 
-    mime = Cdfx___Xml.mime_like
-    assert Cdfx___Xml is from_mime(mime)
+    mime = Cdfx__Xml.mime_like
+    assert Cdfx__Xml is from_mime(mime)
 
 
 def test_vendor_only() -> None:
     Sqlite = from_mime("application/vnd.sqlite3")
     assert Sqlite.mime_type == "application/vnd.sqlite3"
+
+
+def test_mime_format_name_underscores():
+    from fileformats.core.exceptions import FormatDefinitionError
+    from fileformats.core.identification import (
+        from_mime_format_name,
+        to_mime_format_name,
+    )
+
+    assert to_mime_format_name("Svg__Xml") == "svg+xml"
+    assert to_mime_format_name("AmrWb__") == "amr-wb+"
+    assert to_mime_format_name("Wordprocessingml_Document") == (
+        "wordprocessingml.document"
+    )
+    assert to_mime_format_name("_3gpdashQoeReport__Xml") == "3gpdash-qoe-report+xml"
+    assert from_mime_format_name("svg+xml") == "Svg__Xml"
+    assert from_mime_format_name("amr-wb+") == "AmrWb__"
+    with pytest.raises(FormatDefinitionError, match="triple underscore"):
+        to_mime_format_name("Svg___Xml")
+
+
+def test_formats_by_mime_format_name_skips_bad_names(caplog):
+    from fileformats.core.identification import formats_by_mime_format_name
+
+    class Good__Xml:
+        pass
+
+    class Bad___Xml:
+        pass
+
+    with caplog.at_level("WARNING", logger="fileformats"):
+        pairs = list(formats_by_mime_format_name([Good__Xml, Bad___Xml]))
+    assert pairs == [("good+xml", Good__Xml)]
+    assert "Bad___Xml" in caplog.text

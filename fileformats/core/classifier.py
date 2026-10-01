@@ -41,6 +41,40 @@ class Classifier:
             return None
         return module_parts[2].replace("_", "-")
 
+    @classmethod
+    def _mime_format_name(
+        cls, namespace: ty.Optional[str] = None, vendor: ty.Optional[str] = None
+    ) -> str:
+        """The format part of the MIME-like string of the class (i.e. after the "/").
+
+        Parameters
+        ----------
+        namespace : str, optional
+            the namespace of the MIME-like string the name is part of, which is used by
+            classified types to determine whether their classifiers need to include
+            their namespace (see `WithClassifiers._mime_format_name`)
+        vendor : str, optional
+            the vendor of the MIME-like string the name is part of
+        """
+        from .identification import to_mime_format_name
+
+        return to_mime_format_name(cls.__name__)
+
+    @classmethod
+    def _resolvable_in(cls, namespace: str, vendor: ty.Optional[str]) -> bool:
+        """Whether the class can be referred to by name alone within a MIME-like string
+        of the given namespace and vendor, i.e. whether it will be found when the string
+        is parsed by `DataType.from_mime` without its namespace being included"""
+        if cls.namespace == namespace and cls.vendor == vendor:
+            return True
+        # Classes in the parent namespace (e.g. "medimage" for "medimage-fsl") are
+        # also searched
+        return (
+            not cls.vendor
+            and "-" in namespace
+            and cls.namespace == namespace.split("-")[0]
+        )
+
     def dummy(self) -> float:
 
         i: int = 0
