@@ -192,9 +192,7 @@ class Array(
 ):
     # WithClassifiers class attrs
     classifiers_attr_name: str = "item_type"
-    allowed_classifiers: ty.Tuple[  # type: ignore[type-var]
-        ty.Type[Singular[ty.Sequence[ItemType], ty.Sequence[ItemType]]]
-    ] = (Singular,)
+    allowed_classifiers: ty.Tuple[ty.Type[Singular[ty.Any, ty.Any]]] = (Singular,)
     item_type: ty.Optional[ty.Type[Singular[ItemType, ty.Any]]] = None
 
     primitive = tuple  # type: ignore[assignment]

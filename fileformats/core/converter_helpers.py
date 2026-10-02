@@ -160,6 +160,15 @@ class Converter:
         self.in_file = in_file
         self.out_file = out_file
 
+    @property
+    def is_chain(self) -> bool:
+        """Whether the converter chains other converters together to convert via
+        intermediate formats"""
+        return (
+            type(self.task).__name__ == "ConverterChain"
+            and type(self.task).__module__ == "fileformats.core.converter_chain"
+        )
+
     def __eq__(self, other: object) -> bool:
         from pydra.utils.hash import hash_function
 

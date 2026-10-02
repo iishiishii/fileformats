@@ -9,7 +9,7 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
   - repo: https://github.com/psf/black
-    rev: 25.12.0
+    rev: 26.5.1
     hooks:
       - id: black
         language_version: python3.13
@@ -17,18 +17,18 @@ repos:
         args:
           - -l 88
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.1
+    rev: v2.4.3
     hooks:
       - id: codespell
         exclude: ^(fileformats/core/_version\.py)$
         args:
           - --ignore-words=.codespell-ignorewords
   - repo: https://github.com/PyCQA/flake8
-    rev: 7.3.0
+    rev: 7.4.1
     hooks:
       - id: flake8
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.19.1
+    rev: v2.3.1
     hooks:
       - id: mypy
         args:
