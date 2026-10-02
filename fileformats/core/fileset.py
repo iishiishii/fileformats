@@ -834,6 +834,9 @@ class FileSet(DataType):
                 )
             raise FormatConversionError(msg)
 
+        from .converter_chain import ConverterChain
+        from .converter_helpers import Converter
+
         def chain_sort_key(chain: list[Converter]) -> tuple[int, int, list[str]]:
             """Favour shorter chains, then those with fewer templated (i.e. wildcard
             or generic) converters, then alphabetical order of converter names"""
@@ -843,9 +846,6 @@ class FileSet(DataType):
                 for c in chain
             )
             return (len(chain), num_templated, [type(c.task).__name__ for c in chain])
-
-        from .converter_chain import ConverterChain
-        from .converter_helpers import Converter
 
         converter = Converter(ConverterChain(chain=min(chains, key=chain_sort_key)))
         # Store mapping for future reference
