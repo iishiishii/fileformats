@@ -1480,14 +1480,13 @@ class FileSet(DataType):
         from ..generic import File
 
         decomposed_fspaths = []
-        implicit = set(
-            self.required_paths()
-            if required_only and self.required_paths()
-            else self.fspaths
-        )
+        required_paths = self.required_paths() if required_only else None
+        implicit = set(required_paths if required_paths else self.fspaths)
 
-        def is_subpath(path: Path, others: ty.Iterable[Path]) -> bool:
-            return any(path != o and path.is_relative_to(o) for o in others)
+        def is_subpath(path: Path, others: ty.AbstractSet[Path]) -> bool:
+            # Check the (few) parents of the path against the set of other paths, rather
+            # than checking the path against each of the (potentially many) others
+            return any(p in others for p in path.parents)
 
         # Paths that are to be included in the decomposition
         to_include = frozenset(implicit)
@@ -1534,10 +1533,11 @@ class FileSet(DataType):
         # Drop any paths that are nested within other paths in the set, as they will
         # be copied/moved along with their parent
         full_paths = [p / (s + e) for p, s, e in decomposed_fspaths]
+        full_paths_set = frozenset(full_paths)
         return [
             d
             for d, fp in zip(decomposed_fspaths, full_paths)
-            if not is_subpath(fp, full_paths)
+            if not is_subpath(fp, full_paths_set)
         ]
 
     @classmethod
